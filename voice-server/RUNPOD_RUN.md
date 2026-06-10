@@ -21,6 +21,36 @@ The pod was stopped from the RunPod console after testing. The console showed:
 
 Start the pod again from the RunPod console before running the commands below.
 
+## Before Starting the GPU
+
+Run the local preparation script while the pod is still stopped:
+
+```sh
+cd /Users/lubinquan/Desktop/study/tts/VoxCPM
+scripts/pre_gpu_prepare.sh --fast
+```
+
+Use the full version when you want a local production build too:
+
+```sh
+scripts/pre_gpu_prepare.sh
+```
+
+This catches the common problems before GPU billing starts:
+
+- missing local tools;
+- accidental tracking of `.env`, `.next`, `node_modules`, or voice wavs;
+- bad `web/.env.local` shape;
+- Python syntax errors in the voice server;
+- shell script syntax errors;
+- web lint/typecheck/build failures.
+
+It also writes the next command sheet to:
+
+```text
+.gpu-prep/next-runpod-commands.txt
+```
+
 ## One-Time Setup Already Done
 
 System packages installed:
@@ -54,7 +84,33 @@ tab values. With the same current pod, the command shape is:
 ssh root@<pod-ip> -p <ssh-port> -i ~/.ssh/id_ed25519
 ```
 
+Set these on the Mac after copying the current values:
+
+```sh
+export POD_HOST=<pod-ip-or-host>
+export POD_PORT=<ssh-port>
+export KEY=~/.ssh/id_ed25519
+```
+
+Sync the prepared server code:
+
+```sh
+scripts/runpod_sync_voice_server.sh
+```
+
 Start the voice server:
+
+```sh
+scripts/runpod_start_voice_server.sh
+```
+
+If a previous server process is still running and you need a restart:
+
+```sh
+RESTART=1 scripts/runpod_start_voice_server.sh
+```
+
+The manual equivalent on the pod is:
 
 ```sh
 cd /workspace/voxcpm-voice-server
@@ -99,12 +155,7 @@ Expected important fields:
 Keep the voice API private by tunneling from the Mac:
 
 ```sh
-ssh -o ServerAliveInterval=15 \
-  -o ServerAliveCountMax=3 \
-  -o TCPKeepAlive=yes \
-  -o ExitOnForwardFailure=yes \
-  -N -L 8001:127.0.0.1:8000 \
-  root@<pod-ip> -p <ssh-port> -i ~/.ssh/id_ed25519
+POD_HOST=<pod-ip-or-host> POD_PORT=<ssh-port> voice-server/tunnel.sh
 ```
 
 Then:
@@ -121,7 +172,16 @@ VOICE_SERVER_URL=http://localhost:8001
 
 ## Sync Code to Pod
 
-Use `--no-owner --no-group --no-perms` because `/workspace` may reject chown:
+Prefer the scripted sync:
+
+```sh
+scripts/runpod_sync_voice_server.sh
+```
+
+It excludes local private/generated files such as `voices-snapshot/`, `.venv/`,
+`__pycache__/`, and `*.pyc`.
+
+Manual equivalent:
 
 ```sh
 rsync --no-owner --no-group --no-perms -av voice-server/ \

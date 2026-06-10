@@ -85,10 +85,53 @@ Observed stopped state:
 
 When resuming work:
 
-1. Start the RunPod pod from the console.
-2. Recreate the SSH tunnel to the voice server.
-3. Confirm `/health`.
-4. Start or refresh the web app.
+1. Run the local pre-GPU checklist while the GPU is still off.
+2. Start the RunPod pod from the console.
+3. Sync the prepared `voice-server/` code.
+4. Start the remote voice server.
+5. Recreate the SSH tunnel.
+6. Confirm `/health`.
+7. Start or refresh the web app.
+
+## Save GPU Time
+
+Run this before starting the pod:
+
+```sh
+scripts/pre_gpu_prepare.sh --fast
+```
+
+For a full local production check, omit `--fast`:
+
+```sh
+scripts/pre_gpu_prepare.sh
+```
+
+The script checks local tools, ignored secret/audio paths, `web/.env.local`,
+Python syntax, shell syntax, web lint, web typecheck, and optionally the Next.js
+production build. It also writes:
+
+```text
+.gpu-prep/next-runpod-commands.txt
+```
+
+After the pod is started and the current RunPod SSH host/port are known:
+
+```sh
+export POD_HOST=<pod-ip-or-host>
+export POD_PORT=<ssh-port>
+export KEY=~/.ssh/id_ed25519
+
+scripts/runpod_sync_voice_server.sh
+scripts/runpod_start_voice_server.sh
+voice-server/tunnel.sh
+```
+
+If an old server process is already running and you want to restart it:
+
+```sh
+RESTART=1 scripts/runpod_start_voice_server.sh
+```
 
 ## Local Dev
 

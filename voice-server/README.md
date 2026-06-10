@@ -69,5 +69,6 @@ Then point the web app at `http://localhost:8000`.
 
 ## Current RunPod Workflow
 
-See `RUNPOD_RUN.md` for the current A6000 pod notes, SSH tunnel shape, restart
-steps, and default voice preset regeneration steps.
+See `RUNPOD_RUN.md` for the current A6000 pod notes, GPU-off preparation,
+scripted sync/start commands, SSH tunnel shape, restart steps, and default voice
+preset regeneration steps.
