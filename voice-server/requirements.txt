@@ -1,0 +1,9 @@
+voxcpm
+faster-whisper>=1.0.3
+funasr>=1.2.6
+mistralai[realtime]>=1.9.0
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+soundfile>=0.12
+numpy

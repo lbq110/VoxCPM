@@ -5,3 +5,21 @@ voxcpm.egg-info
 .DS_Store
 ./pretrained_models/
 app_local.py
+
+# Local secrets and generated web output
+.env
+.env.*
+!.env.example
+web/.env
+web/.env.*
+!web/.env.example
+web/node_modules/
+web/.next/
+web/out/
+web/*.tsbuildinfo
+
+# Runtime/generated voice data. Voice samples may contain private audio.
+voice-server/voices-snapshot/
+voice-server/.venv/
+voice-server/__pycache__/
+voice-server/**/*.pyc
