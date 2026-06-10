@@ -1,36 +1,104 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# VoxCPM Web Lab
 
-## Getting Started
+This Next.js app contains two local prototypes:
 
-First, run the development server:
+- Voice conversation lab at `/`
+- Interactive book companion at `/book`
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+The app is designed for local testing first. API keys and imported book content
+must stay out of Git.
+
+## Run Locally
+
+```sh
+npm install
+npm run dev -- --port 3001
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+http://localhost:3001
+http://localhost:3001/book
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Environment
 
-## Learn More
+Create `.env.local` from `.env.example`.
 
-To learn more about Next.js, take a look at the following resources:
+For Grok/OpenRouter-backed chat and book companion features:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```sh
+OPENROUTER_API_KEY=sk-or-...
+CHAT_MODEL=x-ai/grok-4.3
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+For the voice chat lab:
 
-## Deploy on Vercel
+```sh
+VOICE_SERVER_URL=http://localhost:8000
+VOICE_API_KEY=
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Scripts
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```sh
+npm run lint
+npm run typecheck
+npm run build
+```
+
+## Voice Conversation Lab
+
+The voice lab tests a ChatGPT-like speech conversation loop:
+
+```text
+Browser mic/text
+  -> Next.js API routes
+  -> SenseVoice-Small ASR
+  -> OpenRouter Grok LLM
+  -> VoxCPM2 TTS
+  -> Web Audio playback
+```
+
+See `../CHAT_APP.md` for the full status, RunPod workflow, voice preset notes,
+and GPU preparation checklist.
+
+## Interactive Book Companion
+
+The `/book` route is a mobile-first ebook reader prototype. It currently
+supports:
+
+- TXT/Markdown import;
+- local storage persistence for imported text;
+- mobile-style pagination;
+- previous/next page controls;
+- font size controls;
+- background theme switching;
+- passage selection, highlights, and notes;
+- selected-passage Q&A through OpenRouter;
+- two-person chapter dialogue generation.
+
+See `../BOOK_COMPANION.md` for product requirements, implemented behavior,
+known constraints, and next work.
+
+## Important Files
+
+- `src/components/Chat.tsx` — voice conversation UI.
+- `src/components/BookCompanion.tsx` — ebook reader UI, parser, pagination, and
+  companion interactions.
+- `src/app/api/chat/route.ts` — streaming LLM route for the voice lab.
+- `src/app/api/asr/route.ts` — ASR proxy route.
+- `src/app/api/tts/route.ts` — TTS proxy route.
+- `src/app/api/voices/*` — voice list/upload/manage routes.
+- `src/app/api/book/companion/route.ts` — selected-passage book companion.
+- `src/app/api/book/dialogue/route.ts` — chapter dialogue generator.
+- `src/lib/config.ts` — server-only configuration.
+
+## Do Not Commit
+
+- `.env.local` or real API keys;
+- imported book text;
+- generated audio;
+- `.next`;
+- `node_modules`.
