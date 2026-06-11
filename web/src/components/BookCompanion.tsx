@@ -9,6 +9,7 @@ import {
 import { buildAskContext } from "@/lib/ask-context";
 import { searchReadBlocks } from "@/lib/book-search";
 import { parseReaderState, serializeReaderState } from "@/lib/reader-state";
+import { VoicePlayer } from "@/lib/voicePlayer";
 
 type DialoguePartner = {
   id: string;
@@ -281,6 +282,18 @@ export default function BookCompanion() {
   // element's transform directly — going through React state would reconcile
   // the entire book on every touchmove and freeze large books.
   const swipeRef = useRef<{ startX: number; startY: number; active: boolean; dx: number } | null>(null);
+  // Listening (read-aloud) engine state.
+  const listenRef = useRef<{
+    player: VoicePlayer | null;
+    ids: string[];
+    pos: number;
+    active: boolean;
+    paused: boolean;
+    pendingAdvance: boolean;
+    single: boolean;
+  }>({ player: null, ids: [], pos: -1, active: false, paused: false, pendingAdvance: false, single: false });
+  const [listenPhase, setListenPhase] = useState<"idle" | "synthesizing" | "speaking" | "paused">("idle");
+  const [speakingBlockId, setSpeakingBlockId] = useState<string | null>(null);
   const [dialogueTranscript, setDialogueTranscript] = useState("");
   const [notes, setNotes] = useState(initialNotes);
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
@@ -412,6 +425,17 @@ export default function BookCompanion() {
       }),
     );
   }, [selectedPassage, fontSize, lineHeight, themeId, notes, highlightedIds, askMessages]);
+
+  // Rebind the listening phase handler every render so it always sees the
+  // latest closures (passages, page state). Stop playback on unmount.
+  useEffect(() => {
+    const player = listenRef.current.player;
+    if (player) player.onPhase = listenPhaseHandler;
+  });
+  useEffect(() => {
+    const l = listenRef.current;
+    return () => l.player?.stop();
+  }, []);
 
   // Capture native text selections made inside the reader. The last
   // non-empty selection is kept even after the browser collapses it (tapping
@@ -565,6 +589,127 @@ export default function BookCompanion() {
     }
   }
 
+  // --- Listening (read-aloud) engine ---
+  // Highlight goes through the DOM directly: routing it through React state
+  // would invalidate the memoized book content on every block change.
+  function setSpeakingHighlight(id: string | null) {
+    const flow = mobileFlowRef.current;
+    if (!flow) return;
+    flow.querySelectorAll(".speaking-block").forEach((el) => el.classList.remove("speaking-block"));
+    if (id) {
+      flow
+        .querySelector(`[data-chunk-id="${CSS.escape(id)}"]`)
+        ?.classList.add("speaking-block");
+    }
+  }
+
+  function listenPhaseHandler(phase: "idle" | "synthesizing" | "speaking") {
+    const l = listenRef.current;
+    if (!l.active) {
+      setListenPhase("idle");
+      return;
+    }
+    if (phase === "idle") {
+      // current block finished playing
+      if (l.paused) {
+        l.pendingAdvance = true;
+        return;
+      }
+      advanceListening();
+    } else {
+      setListenPhase(phase);
+    }
+  }
+
+  function ensurePlayer(): VoicePlayer {
+    const l = listenRef.current;
+    if (!l.player) {
+      l.player = new VoicePlayer();
+      l.player.onPhase = listenPhaseHandler;
+    }
+    return l.player;
+  }
+
+  function speakBlockAt(pos: number) {
+    const l = listenRef.current;
+    const id = l.ids[pos];
+    const block = passages.find((b) => b.id === id);
+    if (!block || !l.player) {
+      stopListening();
+      return;
+    }
+    l.pos = pos;
+    setSpeakingBlockId(id);
+    setSpeakingHighlight(id);
+    // follow the narration without goToPage's side effects (it closes the
+    // drawer, which holds the playback controls)
+    setPageIndex(pageIndexForBlockId(id));
+    setSelectedPassage(id);
+    l.player.speak(block.text);
+  }
+
+  function advanceListening() {
+    const l = listenRef.current;
+    if (!l.active) return;
+    const next = l.pos + 1;
+    if (l.single || next >= l.ids.length) {
+      stopListening();
+      return;
+    }
+    speakBlockAt(next);
+  }
+
+  function startListening(single: boolean) {
+    stopListening();
+    const l = listenRef.current;
+    const startId = nativeSelection?.anchorId ?? activePassage.id;
+    const readable = passages.filter((b) => b.kind !== "rule" && b.text.trim());
+    const startIndex = Math.max(0, readable.findIndex((b) => b.id === startId));
+    l.ids = readable.slice(startIndex).map((b) => b.id);
+    if (!l.ids.length) return;
+    l.active = true;
+    l.paused = false;
+    l.pendingAdvance = false;
+    l.single = single;
+    const player = ensurePlayer();
+    player.prime(); // must run inside the user gesture
+    setListenPhase("synthesizing");
+    speakBlockAt(0);
+  }
+
+  function pauseListening() {
+    const l = listenRef.current;
+    if (!l.active) return;
+    l.paused = true;
+    l.player?.pause();
+    setListenPhase("paused");
+  }
+
+  function resumeListening() {
+    const l = listenRef.current;
+    if (!l.active) return;
+    l.paused = false;
+    l.player?.resume();
+    setListenPhase("speaking");
+    if (l.pendingAdvance) {
+      l.pendingAdvance = false;
+      advanceListening();
+    }
+  }
+
+  function stopListening() {
+    const l = listenRef.current;
+    l.active = false;
+    l.paused = false;
+    l.pendingAdvance = false;
+    l.ids = [];
+    l.pos = -1;
+    l.player?.stop();
+    setSpeakingBlockId(null);
+    setSpeakingHighlight(null);
+    setListenPhase("idle");
+  }
+
   /** First chunk whose start position lies on the given page. */
   function firstChunkIdOnPage(targetPage: number): string | null {
     const flow = mobileFlowRef.current;
@@ -602,6 +747,7 @@ export default function BookCompanion() {
     setSelectedPassage(firstSelectableId(next));
     setPageIndex(0);
     setSelectionToolsOpen(false);
+    stopListening();
     setAskMessages([]);
     setBookSessionId(null);
     setBookSynced(false);
@@ -639,6 +785,7 @@ export default function BookCompanion() {
     setPageIndex(0);
     setImportText("");
     setSelectionToolsOpen(false);
+    stopListening();
     setAskMessages([]);
     setBookSessionId(null);
     setBookSynced(false);
@@ -1361,29 +1508,71 @@ export default function BookCompanion() {
             {panel === "listen" && (
               <div className="space-y-3">
                 <div className={classNames("rounded-[16px] border p-4", theme.card)}>
-                  <p className={classNames("text-xs font-semibold", theme.muted)}>朗读段落</p>
-                  <p className={classNames("mt-2 line-clamp-4 text-sm leading-relaxed", theme.text)}>
-                    {activePassage.text}
+                  <p className={classNames("text-xs font-semibold", theme.muted)}>
+                    {listenPhase === "idle" ? "从此处开始" : "正在朗读"}
+                  </p>
+                  <p
+                    data-listen-current
+                    className={classNames("mt-2 line-clamp-4 text-sm leading-relaxed", theme.text)}
+                  >
+                    {(speakingBlockId && passages.find((b) => b.id === speakingBlockId)?.text) ||
+                      nativeSelection?.text ||
+                      activePassage.text}
                   </p>
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    disabled
-                    className={classNames("h-12 rounded-[14px] border text-sm font-semibold opacity-60", theme.card)}
-                  >
-                    朗读当前段
-                  </button>
-                  <button
-                    type="button"
-                    disabled
-                    className={classNames("h-12 rounded-[14px] border text-sm font-semibold opacity-60", theme.card)}
-                  >
-                    连续听书
-                  </button>
-                </div>
-                <div className={classNames("rounded-[14px] border px-4 py-3 text-sm leading-relaxed", theme.card, theme.muted)}>
-                  VoxCPM2 接入后，这里会切换成播放控制条。
+                {listenPhase === "idle" ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => startListening(true)}
+                      className={classNames("h-12 rounded-[14px] border text-sm font-semibold", theme.card, theme.hover)}
+                    >
+                      朗读当前段
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => startListening(false)}
+                      className="h-12 rounded-[14px] bg-[#1f8a70] text-sm font-semibold text-white"
+                    >
+                      连续听书
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    {listenPhase === "paused" ? (
+                      <button
+                        type="button"
+                        onClick={resumeListening}
+                        className="h-12 rounded-[14px] bg-[#1f8a70] text-sm font-semibold text-white"
+                      >
+                        继续
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={pauseListening}
+                        className={classNames("h-12 rounded-[14px] border text-sm font-semibold", theme.card, theme.hover)}
+                      >
+                        暂停
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={stopListening}
+                      className={classNames("h-12 rounded-[14px] border text-sm font-semibold", theme.card, theme.hover)}
+                    >
+                      停止
+                    </button>
+                  </div>
+                )}
+                <div
+                  data-listen-phase={listenPhase}
+                  className={classNames("rounded-[14px] border px-4 py-3 text-sm leading-relaxed", theme.card, theme.muted)}
+                >
+                  {listenPhase === "idle" && "点击按钮开始朗读。连续听书会自动翻页续读。"}
+                  {listenPhase === "synthesizing" && "正在合成语音..."}
+                  {listenPhase === "speaking" && "朗读中，正文里高亮的就是当前句。"}
+                  {listenPhase === "paused" && "已暂停。"}
                 </div>
               </div>
             )}

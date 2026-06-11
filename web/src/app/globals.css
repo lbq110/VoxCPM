@@ -42,3 +42,11 @@ body {
   background: rgba(255, 255, 255, 0.12);
   border-radius: 999px;
 }
+
+/* Block currently being read aloud (listening mode) */
+.speaking-block {
+  background: rgba(31, 138, 112, 0.22);
+  border-radius: 4px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}

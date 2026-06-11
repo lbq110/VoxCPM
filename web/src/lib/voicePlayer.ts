@@ -57,6 +57,16 @@ export class VoicePlayer {
     void this.drain();
   }
 
+  /** Pause playback (audio clock freezes; scheduled buffers resume later). */
+  pause() {
+    if (this.ctx && this.ctx.state === "running") void this.ctx.suspend();
+  }
+
+  /** Resume after pause(). */
+  resume() {
+    if (this.ctx && this.ctx.state === "suspended") void this.ctx.resume();
+  }
+
   /** Stop everything and reset (barge-in). */
   stop() {
     this.generation++;
