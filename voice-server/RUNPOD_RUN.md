@@ -51,6 +51,25 @@ It also writes the next command sheet to:
 .gpu-prep/next-runpod-commands.txt
 ```
 
+## After a Pod Migration (container layer is wiped)
+
+RunPod migrations keep `/workspace` but reset the container, so the
+one-time setup below must be repeated. Confirmed working on 2026-06-11
+(pod `rolling_apricot_chicken-migration`):
+
+```sh
+apt-get update -qq && apt-get install -y -qq --no-install-recommends rsync ffmpeg git
+pip install --no-cache-dir -r /workspace/voxcpm-voice-server/requirements.txt
+# IMPORTANT: requirements pulls the latest torch (cu130), which the pod's
+# CUDA 12.8 driver rejects AND mismatches cuDNN. Pin the stack back LAST:
+pip install --force-reinstall --no-cache-dir torch==2.5.1 torchaudio==2.5.1 \
+  --index-url https://download.pytorch.org/whl/cu124
+python -c "import torch; print(torch.cuda.is_available(), torch.backends.cudnn.version())"
+```
+
+`torch.cuda.is_available()` must print `True` before starting the server,
+otherwise TTS fails with `CUDNN_STATUS_NOT_INITIALIZED` at request time.
+
 ## One-Time Setup Already Done
 
 System packages installed:
