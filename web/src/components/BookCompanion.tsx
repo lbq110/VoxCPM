@@ -146,6 +146,15 @@ function classNames(...values: Array<string | false | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+// Same options shape the voice chat uses: a fixed reference voice keeps the
+// timbre identical across every narrated block.
+function listenTtsOptions(voice: string | null): Record<string, unknown> {
+  return {
+    ...(voice ? { voice } : {}),
+    inference_timesteps: 6,
+  };
+}
+
 
 function readingBlockClass(block: BookBlock, highlighted: boolean, theme: ReaderTheme) {
   const marked = highlighted ? "bg-[#f4df8c]/35" : "";
@@ -294,6 +303,8 @@ export default function BookCompanion() {
   }>({ player: null, ids: [], pos: -1, enqueued: 0, active: false, paused: false });
   const [listenPhase, setListenPhase] = useState<"idle" | "synthesizing" | "speaking" | "paused">("idle");
   const [speakingBlockId, setSpeakingBlockId] = useState<string | null>(null);
+  const [voices, setVoices] = useState<{ id: string; label: string }[]>([]);
+  const [listenVoice, setListenVoice] = useState<string | null>(null);
   const [dialogueTranscript, setDialogueTranscript] = useState("");
   const [notes, setNotes] = useState(initialNotes);
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
@@ -389,6 +400,7 @@ export default function BookCompanion() {
         if (state.notes.length) setNotes(state.notes);
         setHighlightedIds(state.highlightedIds);
         setAskMessages(state.askMessages);
+        if (state.voiceId) setListenVoice(state.voiceId);
         if (state.anchorBlockId) setPendingAnchor(state.anchorBlockId);
       }
       restoredRef.current = true;
@@ -422,9 +434,31 @@ export default function BookCompanion() {
         notes,
         highlightedIds,
         askMessages,
+        voiceId: listenVoice,
       }),
     );
-  }, [selectedPassage, fontSize, lineHeight, themeId, notes, highlightedIds, askMessages]);
+  }, [selectedPassage, fontSize, lineHeight, themeId, notes, highlightedIds, askMessages, listenVoice]);
+
+  // Load the narration voice menu once; keep the player's TTS options in
+  // sync with the chosen voice so the timbre stays FIXED across blocks.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/voices")
+      .then((r) => r.json())
+      .then((data: { voices?: { id: string; label: string }[]; default?: string | null }) => {
+        if (cancelled || !data.voices) return;
+        setVoices(data.voices);
+        setListenVoice((current) => current ?? data.default ?? data.voices?.[0]?.id ?? null);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    listenRef.current.player?.setOptions(listenTtsOptions(listenVoice));
+  }, [listenVoice]);
 
   // Rebind the listening handlers every render so they always see the
   // latest closures (passages, page state). Stop playback on unmount.
@@ -663,7 +697,7 @@ export default function BookCompanion() {
   function ensurePlayer(): VoicePlayer {
     const l = listenRef.current;
     if (!l.player) {
-      l.player = new VoicePlayer();
+      l.player = new VoicePlayer(listenTtsOptions(listenVoice));
       l.player.onPhase = listenPhaseHandler;
       l.player.onUtteranceStart = handleUtteranceStart;
     }
@@ -1529,6 +1563,32 @@ export default function BookCompanion() {
                       activePassage.text}
                   </p>
                 </div>
+                {voices.length > 0 && (
+                  <div>
+                    <p className={classNames("mb-2 text-xs font-semibold uppercase tracking-[0.12em]", theme.muted)}>
+                      朗读音色
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {voices.map((v) => (
+                        <button
+                          key={v.id}
+                          type="button"
+                          onClick={() => {
+                            if (listenPhase !== "idle") stopListening();
+                            setListenVoice(v.id);
+                          }}
+                          className={classNames(
+                            "rounded-full border px-3.5 py-2 text-sm font-medium",
+                            theme.card,
+                            listenVoice === v.id && "border-[#1f8a70] shadow-[0_0_0_2px_rgba(31,138,112,0.16)]",
+                          )}
+                        >
+                          {v.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {listenPhase === "idle" ? (
                   <div className="grid grid-cols-2 gap-2">
                     <button

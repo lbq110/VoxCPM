@@ -12,6 +12,7 @@ const FULL: ReaderState = {
     { role: "user", content: "问题" },
     { role: "assistant", content: "回答" },
   ],
+  voiceId: "u_wechat_20260529_210719",
 };
 
 describe("reader-state round trip", () => {
@@ -41,6 +42,11 @@ describe("parseReaderState validation", () => {
     expect(state.notes).toEqual([]);
     expect(state.highlightedIds).toEqual([]);
     expect(state.askMessages).toEqual([]);
+    expect(state.voiceId).toBeNull();
+  });
+
+  it("rejects non-string voiceId", () => {
+    expect(parseReaderState(JSON.stringify({ voiceId: 42 }))!.voiceId).toBeNull();
   });
 
   it("clamps fontSize and lineHeight to the UI ranges", () => {

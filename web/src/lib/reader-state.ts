@@ -10,6 +10,8 @@ export type ReaderState = {
   notes: string[];
   highlightedIds: string[];
   askMessages: AskMessage[];
+  /** Fixed narration voice id (null = server default). */
+  voiceId: string | null;
 };
 
 const THEMES: ReaderThemeId[] = ["paper", "white", "night"];
@@ -51,5 +53,6 @@ export function parseReaderState(raw: string | null): ReaderState | null {
             typeof (m as AskMessage).content === "string",
         )
       : [],
+    voiceId: typeof d.voiceId === "string" ? d.voiceId : null,
   };
 }
