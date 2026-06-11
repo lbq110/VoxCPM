@@ -726,7 +726,8 @@ export default function BookCompanion() {
       if (enqueueNextListenBlock()) return;
       stopListening(); // playback queue fully finished
     } else {
-      setListenPhase(phase);
+      // background synthesis finishing must not override a user-paused state
+      if (!l.paused) setListenPhase(phase);
     }
   }
 

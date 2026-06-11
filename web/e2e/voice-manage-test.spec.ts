@@ -85,3 +85,45 @@ test("rename and delete voices from the listen panel", async ({ page }) => {
   await expect(page.locator("button:visible", { hasText: "音色二" })).toHaveCount(0, { timeout: 5_000 });
   console.log("[manage] delete OK");
 });
+
+test("pause survives a synthesis completing in the background", async ({ page }) => {
+  test.setTimeout(60_000);
+  const pcm = Buffer.alloc(Math.floor(24000 * 2) * 2);
+  await page.route("**/api/tts", async (route) => {
+    // synthesis takes a while — completes AFTER the user paused
+    await new Promise((r) => setTimeout(r, 1200));
+    await route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "application/octet-stream", "X-Sample-Rate": "24000" },
+      body: pcm,
+    });
+  });
+  await page.goto("http://localhost:3001/book", { waitUntil: "domcontentloaded" });
+  await page.evaluate(() => {
+    localStorage.clear();
+    localStorage.setItem(
+      "book-companion:jiyuan:text",
+      Array.from({ length: 5 }, (_, i) => `第${i + 1}段内容，比较长的句子方便测试。`).join("\n"),
+    );
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(2000);
+
+  await page.locator('[data-bar-action="朗读"]:visible').click();
+  await page.waitForTimeout(300); // synthesis of block 1 still in flight
+  // pause while synthesizing
+  await page.locator('[data-bar-action="暂停"]:visible').click();
+  await expect(page.locator('[data-bar-action="继续"]:visible')).toBeVisible({ timeout: 3_000 });
+
+  // background synthesis completes now — paused state must SURVIVE
+  await page.waitForTimeout(2500);
+  await expect(page.locator('[data-bar-action="继续"]:visible')).toBeVisible();
+  const phase = await page.locator("[data-listen-phase]").count();
+  void phase;
+  console.log("[pause-race] paused state survived background synthesis");
+
+  // resume still works
+  await page.locator('[data-bar-action="继续"]:visible').click();
+  await expect(page.locator('[data-bar-action="暂停"]:visible')).toBeVisible({ timeout: 5_000 });
+  console.log("[pause-race] resume after race OK");
+});
