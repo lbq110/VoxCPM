@@ -300,7 +300,16 @@ export default function BookCompanion() {
     enqueued: number;
     active: boolean;
     paused: boolean;
-  }>({ player: null, ids: [], pos: -1, enqueued: 0, active: false, paused: false });
+    /** Adaptive narration speed (chars/sec), calibrated from real playback. */
+    charsPerSec: number;
+    lastStartMs: number;
+    lastChars: number;
+    /** Pending mid-block page-turn timers (for blocks spanning pages). */
+    turnTimers: number[];
+  }>({
+    player: null, ids: [], pos: -1, enqueued: 0, active: false, paused: false,
+    charsPerSec: 0, lastStartMs: 0, lastChars: 0, turnTimers: [],
+  });
   const [listenPhase, setListenPhase] = useState<"idle" | "synthesizing" | "speaking" | "paused">("idle");
   const [speakingBlockId, setSpeakingBlockId] = useState<string | null>(null);
   const [voices, setVoices] = useState<{ id: string; label: string }[]>([]);
@@ -754,6 +763,38 @@ export default function BookCompanion() {
     }
   }
 
+  function clearTurnTimers() {
+    const l = listenRef.current;
+    for (const timer of l.turnTimers) window.clearTimeout(timer);
+    l.turnTimers = [];
+  }
+
+  /** For a block spanning pages, schedule page turns mid-narration based on
+   *  per-page line counts and the calibrated narration speed. */
+  function scheduleMidBlockPageTurns(id: string, estimatedSeconds: number) {
+    const l = listenRef.current;
+    const flow = mobileFlowRef.current;
+    if (!flow || !flowSize) return;
+    const el = flow.querySelector(`[data-chunk-id="${CSS.escape(id)}"]`);
+    if (!el) return;
+    const stride = flowSize.w + PAGE_GAP;
+    const flowLeft = flow.getBoundingClientRect().left;
+    const rects = Array.from(el.getClientRects()).filter((r) => r.width > 2 && r.height > 2);
+    if (rects.length < 2) return;
+    const linePages = rects.map((r) => Math.floor((r.left - flowLeft + 2) / stride));
+    for (let i = 1; i < linePages.length; i++) {
+      if (linePages[i] === linePages[i - 1]) continue;
+      const targetPage = linePages[i];
+      const delayMs = (i / linePages.length) * estimatedSeconds * 1000;
+      const timer = window.setTimeout(() => {
+        const cur = listenRef.current;
+        if (!cur.active || cur.paused || cur.ids[cur.pos] !== id) return;
+        setPageIndex(targetPage);
+      }, delayMs);
+      l.turnTimers.push(timer);
+    }
+  }
+
   function handleUtteranceStart(tag: unknown) {
     const l = listenRef.current;
     if (!l.active || typeof tag !== "string") return;
@@ -766,6 +807,24 @@ export default function BookCompanion() {
     // drawer, which holds the playback controls)
     setPageIndex(pageIndexForBlockId(tag));
     setSelectedPassage(tag);
+
+    // calibrate narration speed from the previous block's real duration
+    const now = performance.now();
+    if (l.lastStartMs && l.lastChars) {
+      const elapsed = (now - l.lastStartMs) / 1000;
+      if (elapsed > 0.5) {
+        const rate = l.lastChars / elapsed;
+        l.charsPerSec = l.charsPerSec ? l.charsPerSec * 0.6 + rate * 0.4 : rate;
+      }
+    }
+    const block = passages.find((b) => b.id === tag);
+    l.lastStartMs = now;
+    l.lastChars = block?.text.length ?? 0;
+
+    clearTurnTimers();
+    if (block) {
+      scheduleMidBlockPageTurns(tag, block.text.length / (l.charsPerSec || 5.5));
+    }
     enqueueListenLookahead();
   }
 
@@ -804,6 +863,7 @@ export default function BookCompanion() {
     if (!l.active) return;
     l.paused = true;
     l.player?.pause();
+    clearTurnTimers();
     setListenPhase("paused");
   }
 
@@ -822,6 +882,9 @@ export default function BookCompanion() {
     l.ids = [];
     l.pos = -1;
     l.enqueued = 0;
+    l.lastStartMs = 0;
+    l.lastChars = 0;
+    clearTurnTimers();
     l.player?.stop();
     setSpeakingBlockId(null);
     setSpeakingHighlight(null);
@@ -1503,6 +1566,27 @@ export default function BookCompanion() {
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {listenPhase !== "idle" && !drawerOpen && (
+          <div
+            data-listen-bar
+            className={classNames(
+              "fixed bottom-[96px] left-1/2 z-30 flex -translate-x-1/2 items-center gap-3 rounded-full border px-4 py-2 text-sm shadow-lg backdrop-blur",
+              theme.bottom,
+            )}
+          >
+            <span className={theme.muted}>
+              {listenPhase === "paused" ? "已暂停" : listenPhase === "synthesizing" ? "合成中..." : "朗读中"}
+            </span>
+            <button
+              type="button"
+              onClick={stopListening}
+              className="rounded-full bg-[#c4543f] px-3 py-1 text-xs font-semibold text-white"
+            >
+              停止
+            </button>
           </div>
         )}
 

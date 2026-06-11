@@ -127,3 +127,48 @@ test("pause survives a synthesis completing in the background", async ({ page })
   await expect(page.locator('[data-bar-action="暂停"]:visible')).toBeVisible({ timeout: 5_000 });
   console.log("[pause-race] resume after race OK");
 });
+
+test("floating stop bar: stops while playing and while paused", async ({ page }) => {
+  test.setTimeout(60_000);
+  const pcm = Buffer.alloc(Math.floor(24000 * 3) * 2);
+  await page.route("**/api/tts", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "application/octet-stream", "X-Sample-Rate": "24000" },
+      body: pcm,
+    }),
+  );
+  await page.goto("http://localhost:3001/book", { waitUntil: "domcontentloaded" });
+  await page.evaluate(() => {
+    localStorage.clear();
+    localStorage.setItem(
+      "book-companion:jiyuan:text",
+      Array.from({ length: 6 }, (_, i) => `第${i + 1}段，足够长的句子来持续播放。`).join("\n"),
+    );
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(2000);
+
+  // play -> floating bar appears -> stop while playing
+  await page.locator('[data-bar-action="朗读"]:visible').click();
+  await expect(page.locator("[data-listen-bar]")).toBeVisible({ timeout: 10_000 });
+  await page.locator("[data-listen-bar] button", { hasText: "停止" }).click();
+  await expect(page.locator("[data-listen-bar]")).toHaveCount(0, { timeout: 3_000 });
+  await expect(page.locator('[data-bar-action="朗读"]:visible')).toBeVisible();
+  console.log("[stop-bar] stop while playing OK");
+
+  // play -> pause -> stop while paused
+  await page.locator('[data-bar-action="朗读"]:visible').click();
+  await expect(page.locator('[data-bar-action="暂停"]:visible')).toBeVisible({ timeout: 10_000 });
+  await page.locator('[data-bar-action="暂停"]:visible').click();
+  await expect(page.locator("[data-listen-bar]")).toContainText("已暂停");
+  await page.locator("[data-listen-bar] button", { hasText: "停止" }).click();
+  await expect(page.locator("[data-listen-bar]")).toHaveCount(0, { timeout: 3_000 });
+  await expect(page.locator('[data-bar-action="朗读"]:visible')).toBeVisible();
+  console.log("[stop-bar] stop while paused OK");
+
+  // and playback can start again cleanly
+  await page.locator('[data-bar-action="朗读"]:visible').click();
+  await expect(page.locator('[data-bar-action="暂停"]:visible')).toBeVisible({ timeout: 10_000 });
+  console.log("[stop-bar] restart after stop OK");
+});
