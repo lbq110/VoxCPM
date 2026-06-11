@@ -305,6 +305,8 @@ export default function BookCompanion() {
   const [speakingBlockId, setSpeakingBlockId] = useState<string | null>(null);
   const [voices, setVoices] = useState<{ id: string; label: string }[]>([]);
   const [listenVoice, setListenVoice] = useState<string | null>(null);
+  const [voiceUploading, setVoiceUploading] = useState(false);
+  const [voiceUploadMsg, setVoiceUploadMsg] = useState("");
   const [dialogueTranscript, setDialogueTranscript] = useState("");
   const [notes, setNotes] = useState(initialNotes);
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
@@ -441,20 +443,46 @@ export default function BookCompanion() {
 
   // Load the narration voice menu once; keep the player's TTS options in
   // sync with the chosen voice so the timbre stays FIXED across blocks.
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/voices")
-      .then((r) => r.json())
-      .then((data: { voices?: { id: string; label: string }[]; default?: string | null }) => {
-        if (cancelled || !data.voices) return;
-        setVoices(data.voices);
-        setListenVoice((current) => current ?? data.default ?? data.voices?.[0]?.id ?? null);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
+  async function refreshVoices(): Promise<{ id: string; label: string }[]> {
+    const data = (await fetch("/api/voices").then((r) => r.json())) as {
+      voices?: { id: string; label: string }[];
+      default?: string | null;
     };
+    const list = data.voices ?? [];
+    setVoices(list);
+    setListenVoice((current) => current ?? data.default ?? list[0]?.id ?? null);
+    return list;
+  }
+
+  useEffect(() => {
+    void refreshVoices().catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** Upload a recording, extract its voice on the server, select it. */
+  async function handleVoiceUpload(file: File | undefined) {
+    if (!file || voiceUploading) return;
+    setVoiceUploading(true);
+    setVoiceUploadMsg("提取音色中（需要几十秒）...");
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("label", file.name.replace(/\.[^.]+$/, "").slice(0, 24) || "我的音色");
+      fd.append("gender", "custom");
+      fd.append("ultimate", "true");
+      const res = await fetch("/api/voices/add", { method: "POST", body: fd });
+      const data = (await res.json()) as { id?: string; label?: string; error?: string; detail?: string };
+      if (!res.ok || !data.id) throw new Error(data.error || data.detail || "音色提取失败");
+      stopListening();
+      await refreshVoices();
+      setListenVoice(data.id);
+      setVoiceUploadMsg(`已添加并选用：${data.label ?? data.id}`);
+    } catch (err) {
+      setVoiceUploadMsg(err instanceof Error ? err.message : "上传失败");
+    } finally {
+      setVoiceUploading(false);
+    }
+  }
 
   useEffect(() => {
     listenRef.current.player?.setOptions(listenTtsOptions(listenVoice));
@@ -1564,32 +1592,55 @@ export default function BookCompanion() {
                       activePassage.text}
                   </p>
                 </div>
-                {voices.length > 0 && (
-                  <div>
-                    <p className={classNames("mb-2 text-xs font-semibold uppercase tracking-[0.12em]", theme.muted)}>
-                      朗读音色
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      {voices.map((v) => (
-                        <button
-                          key={v.id}
-                          type="button"
-                          onClick={() => {
-                            if (listenPhase !== "idle") stopListening();
-                            setListenVoice(v.id);
-                          }}
-                          className={classNames(
-                            "rounded-full border px-3.5 py-2 text-sm font-medium",
-                            theme.card,
-                            listenVoice === v.id && "border-[#1f8a70] shadow-[0_0_0_2px_rgba(31,138,112,0.16)]",
-                          )}
-                        >
-                          {v.label}
-                        </button>
-                      ))}
-                    </div>
+                <div>
+                  <p className={classNames("mb-2 text-xs font-semibold uppercase tracking-[0.12em]", theme.muted)}>
+                    朗读音色
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {voices.map((v) => (
+                      <button
+                        key={v.id}
+                        type="button"
+                        onClick={() => {
+                          if (listenPhase !== "idle") stopListening();
+                          setListenVoice(v.id);
+                        }}
+                        className={classNames(
+                          "rounded-full border px-3.5 py-2 text-sm font-medium",
+                          theme.card,
+                          listenVoice === v.id && "border-[#1f8a70] shadow-[0_0_0_2px_rgba(31,138,112,0.16)]",
+                        )}
+                      >
+                        {v.label}
+                      </button>
+                    ))}
+                    <label
+                      className={classNames(
+                        "cursor-pointer rounded-full border border-dashed border-current/30 px-3.5 py-2 text-sm font-medium",
+                        theme.muted,
+                        theme.hover,
+                        voiceUploading && "pointer-events-none opacity-50",
+                      )}
+                    >
+                      {voiceUploading ? "提取中..." : "+ 上传录音"}
+                      <input
+                        type="file"
+                        accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg"
+                        className="sr-only"
+                        disabled={voiceUploading}
+                        onChange={(event) => {
+                          void handleVoiceUpload(event.target.files?.[0]);
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
                   </div>
-                )}
+                  {voiceUploadMsg && (
+                    <p data-voice-upload-msg className={classNames("mt-2 text-xs", theme.muted)}>
+                      {voiceUploadMsg}
+                    </p>
+                  )}
+                </div>
                 {listenPhase === "idle" ? (
                   <div className="grid grid-cols-2 gap-2">
                     <button
