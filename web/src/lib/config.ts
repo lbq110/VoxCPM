@@ -6,6 +6,8 @@ export const config = {
   chatModel: process.env.CHAT_MODEL ?? "x-ai/grok-4.3",
   // The RunPod (or local) voice server base URL, e.g. https://xxxx-8000.proxy.runpod.net
   voiceServerUrl: (process.env.VOICE_SERVER_URL ?? "http://localhost:8000").replace(/\/$/, ""),
+  // Open Notebook gateway (whole-book Q&A backend)
+  openNotebookUrl: (process.env.OPEN_NOTEBOOK_URL ?? "http://localhost:5055").replace(/\/$/, ""),
   voiceApiKey: process.env.VOICE_API_KEY ?? "",
   systemPrompt:
     process.env.SYSTEM_PROMPT ??

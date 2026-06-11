@@ -1,6 +1,14 @@
 "use client";
 
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type BookBlock,
+  firstSelectableId,
+  parseBookText,
+} from "@/lib/book-parser";
+import { buildAskContext } from "@/lib/ask-context";
+import { searchReadBlocks } from "@/lib/book-search";
+import { parseReaderState, serializeReaderState } from "@/lib/reader-state";
 
 type DialoguePartner = {
   id: string;
@@ -10,18 +18,10 @@ type DialoguePartner = {
 };
 
 type Panel = "toc" | "listen" | "ask" | "dialogue" | "notes" | "settings";
+type AskMessage = { role: "user" | "assistant"; content: string };
 type CompanionMode = "解释" | "举例" | "质疑";
-type BookBlockKind = "heading" | "paragraph" | "quote" | "list" | "rule";
 type ReaderThemeId = "paper" | "white" | "night";
 type ReaderLayout = "mobile" | "desktop";
-
-type BookBlock = {
-  id: string;
-  text: string;
-  kind: BookBlockKind;
-  level?: number;
-  continued?: boolean;
-};
 
 type ReaderTheme = {
   label: string;
@@ -71,6 +71,9 @@ const partners: DialoguePartner[] = [
   },
 ];
 
+// Horizontal gap between pages (columns) in the line-level pagination flow.
+const PAGE_GAP = 48;
+
 const placeholderPassages: BookBlock[] = [
   {
     id: "placeholder",
@@ -96,10 +99,10 @@ const readerThemes: Record<ReaderThemeId, ReaderTheme> = {
     app: "bg-[#20201e]",
     device: "bg-[#f4f1e8] text-[#2c2b28]",
     page: "bg-[#f4f1e8]",
-    chrome: "border-[#ded8ca] bg-[#f7f5ee]/95",
-    bottom: "border-[#ded8ca] bg-[#f7f5ee]/96",
-    card: "border-[#dad3c4] bg-[#fbfaf4]",
-    sheet: "border-[#d8d1c4] bg-[#fbfaf4]",
+    chrome: "border-[#ded8ca] bg-[#f7f5ee]/95 text-[#2f2d29]",
+    bottom: "border-[#ded8ca] bg-[#f7f5ee]/96 text-[#2f2d29]",
+    card: "border-[#dad3c4] bg-[#fbfaf4] text-[#2f2d29]",
+    sheet: "border-[#d8d1c4] bg-[#fbfaf4] text-[#2f2d29]",
     text: "text-[#2f2d29]",
     muted: "text-[#777064]",
     rail: "bg-[#dfd8ca]",
@@ -111,10 +114,10 @@ const readerThemes: Record<ReaderThemeId, ReaderTheme> = {
     app: "bg-[#1f2322]",
     device: "bg-[#f7f8f6] text-[#252b29]",
     page: "bg-[#f7f8f6]",
-    chrome: "border-[#e1e4df] bg-[#fbfcfa]/95",
-    bottom: "border-[#e1e4df] bg-[#fbfcfa]/96",
-    card: "border-[#dfe4de] bg-white",
-    sheet: "border-[#dde3dc] bg-[#fbfcfa]",
+    chrome: "border-[#e1e4df] bg-[#fbfcfa]/95 text-[#252b29]",
+    bottom: "border-[#e1e4df] bg-[#fbfcfa]/96 text-[#252b29]",
+    card: "border-[#dfe4de] bg-white text-[#252b29]",
+    sheet: "border-[#dde3dc] bg-[#fbfcfa] text-[#252b29]",
     text: "text-[#252b29]",
     muted: "text-[#737c76]",
     rail: "bg-[#dce3dc]",
@@ -126,10 +129,10 @@ const readerThemes: Record<ReaderThemeId, ReaderTheme> = {
     app: "bg-[#0f0f0e]",
     device: "bg-[#181815] text-[#d8d2c5]",
     page: "bg-[#181815]",
-    chrome: "border-[#2b2a25] bg-[#1e1e1a]/95",
-    bottom: "border-[#2b2a25] bg-[#1e1e1a]/96",
-    card: "border-[#333126] bg-[#20201c]",
-    sheet: "border-[#333126] bg-[#20201c]",
+    chrome: "border-[#2b2a25] bg-[#1e1e1a]/95 text-[#d8d2c5]",
+    bottom: "border-[#2b2a25] bg-[#1e1e1a]/96 text-[#d8d2c5]",
+    card: "border-[#333126] bg-[#20201c] text-[#d8d2c5]",
+    sheet: "border-[#333126] bg-[#20201c] text-[#d8d2c5]",
     text: "text-[#d8d2c5]",
     muted: "text-[#928b7d]",
     rail: "bg-[#333126]",
@@ -142,279 +145,6 @@ function classNames(...values: Array<string | false | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
-function cleanMarkdownInline(value: string) {
-  return value
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/__([^_]+)__/g, "$1")
-    .replace(/\*([^*]+)\*/g, "$1")
-    .replace(/_([^_]+)_/g, "$1")
-    .replace(/<[^>]+>/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-const strongBreakMarks = "。！？!?；;";
-const weakBreakMarks = "，,、：:";
-const leadingPunctuation = "，,、。！？!?；;：:）)]】》」』’”";
-const closingPunctuation = "）)]】》」』’”";
-
-function isStrongBreakMark(value: string) {
-  return strongBreakMarks.includes(value);
-}
-
-function isWeakBreakMark(value: string) {
-  return weakBreakMarks.includes(value);
-}
-
-function isLeadingPunctuation(value: string) {
-  return leadingPunctuation.includes(value);
-}
-
-function lastMeaningfulMark(line: string) {
-  let text = line.trim();
-  while (text && closingPunctuation.includes(text[text.length - 1])) {
-    text = text.slice(0, -1).trimEnd();
-  }
-  return text[text.length - 1] ?? "";
-}
-
-function naturalBreakIndex(text: string, maxLength: number) {
-  const softLimit = Math.min(text.length, maxLength + 10);
-  const minUsefulLength = Math.floor(maxLength * 0.55);
-  let strongCandidate = 0;
-  let weakCandidate = 0;
-
-  for (let index = 0; index < softLimit; index += 1) {
-    if (index + 1 >= minUsefulLength && isStrongBreakMark(text[index])) {
-      strongCandidate = index + 1;
-    }
-    if (index + 1 >= minUsefulLength && isWeakBreakMark(text[index])) {
-      weakCandidate = index + 1;
-    }
-  }
-
-  if (strongCandidate) return strongCandidate;
-  if (weakCandidate) return weakCandidate;
-
-  for (let index = maxLength; index > minUsefulLength; index -= 1) {
-    if (isStrongBreakMark(text[index - 1])) return index;
-  }
-
-  for (let index = maxLength; index > minUsefulLength; index -= 1) {
-    if (isWeakBreakMark(text[index - 1])) return index;
-  }
-
-  return Math.min(maxLength, text.length);
-}
-
-function splitOversizedText(text: string, maxLength: number) {
-  const chunks: string[] = [];
-  let rest = text.trim();
-
-  while (rest.length > maxLength) {
-    let boundary = naturalBreakIndex(rest, maxLength);
-    while (boundary < rest.length && isLeadingPunctuation(rest[boundary])) {
-      boundary += 1;
-    }
-
-    const chunk = rest.slice(0, boundary).trim();
-    if (chunk) chunks.push(chunk);
-    rest = rest.slice(boundary).trim();
-  }
-
-  if (rest) chunks.push(rest);
-  return chunks;
-}
-
-function splitLongParagraph(text: string, maxLength = 68) {
-  if (text.length <= maxLength) return [text];
-
-  const sentences = text.match(/[^。！？!?；;]+[。！？!?；;]?/g) ?? [text];
-  const chunks: string[] = [];
-  let current = "";
-
-  for (const sentence of sentences.map((item) => item.trim()).filter(Boolean)) {
-    const pieces = sentence.length > maxLength ? splitOversizedText(sentence, maxLength) : [sentence];
-
-    for (let piece of pieces) {
-      if (!piece) continue;
-
-      while (current && piece && isLeadingPunctuation(piece[0])) {
-        current += piece[0];
-        piece = piece.slice(1).trim();
-      }
-
-      if (!piece) continue;
-
-      if ((current + piece).length > maxLength && current) {
-        chunks.push(current);
-        current = piece;
-      } else {
-        current += piece;
-      }
-    }
-  }
-
-  if (current) chunks.push(current);
-  return chunks;
-}
-
-function hasSourceParagraphIndent(line: string) {
-  return /^\s*\u3000/.test(line) || /^( {4,}|\t+)\S/.test(line);
-}
-
-function endsSourceParagraph(line: string) {
-  const mark = lastMeaningfulMark(line);
-  return Boolean(mark && isStrongBreakMark(mark));
-}
-
-function continuesSourceParagraph(line: string | undefined) {
-  if (!line) return false;
-  const mark = lastMeaningfulMark(line);
-  return !mark || isWeakBreakMark(mark) || !isStrongBreakMark(mark);
-}
-
-function shouldStartSourceParagraph(previousLine: string | undefined, currentLine: string) {
-  if (!previousLine || !currentLine) return false;
-  return endsSourceParagraph(previousLine) && !isLeadingPunctuation(currentLine[0]);
-}
-
-function normalizeParsedBlocks(blocks: BookBlock[]) {
-  const normalized: BookBlock[] = [];
-
-  for (const block of blocks) {
-    if (!block.text) {
-      normalized.push(block);
-      continue;
-    }
-
-    let text = block.text;
-    const previousTextBlock = [...normalized]
-      .reverse()
-      .find((item) => item.text && item.kind !== "heading");
-
-    while (text && previousTextBlock && isLeadingPunctuation(text[0])) {
-      previousTextBlock.text += text[0];
-      text = text.slice(1).trimStart();
-    }
-
-    if (!text) continue;
-    normalized.push({ ...block, text });
-  }
-
-  return normalized;
-}
-
-function parseBookText(raw: string): BookBlock[] {
-  const normalized = raw
-    .replace(/\r/g, "")
-    .replace(/^---\n[\s\S]*?\n---\n?/, "")
-    .trim();
-  if (!normalized) return [];
-
-  const blocks: BookBlock[] = [];
-  const paragraphBuffer: string[] = [];
-  let counter = 1;
-  let inCodeFence = false;
-
-  const pushBlock = (kind: BookBlockKind, text = "", level?: number, continued = false) => {
-    blocks.push({
-      id: `jiyuan-${counter}`,
-      text,
-      kind,
-      level,
-      continued,
-    });
-    counter += 1;
-  };
-
-  const pushParagraph = () => {
-    const text = cleanMarkdownInline(paragraphBuffer.join(" "));
-    paragraphBuffer.length = 0;
-    if (!text) return;
-    const chunks = splitLongParagraph(text);
-    chunks.forEach((chunk, index) => {
-      pushBlock("paragraph", chunk, undefined, index > 0);
-    });
-  };
-
-  for (const line of normalized.split("\n")) {
-    const trimmed = line.trim();
-
-    if (/^```/.test(trimmed)) {
-      inCodeFence = !inCodeFence;
-      continue;
-    }
-
-    if (inCodeFence) continue;
-
-    if (!trimmed) {
-      if (!continuesSourceParagraph(paragraphBuffer.at(-1))) {
-        pushParagraph();
-      }
-      continue;
-    }
-
-    const heading = trimmed.match(/^(#{1,6})\s+(.+?)\s*#*$/);
-    if (heading) {
-      pushParagraph();
-      pushBlock("heading", cleanMarkdownInline(heading[2]), heading[1].length);
-      continue;
-    }
-
-    if (/^([-*_])\1{2,}$/.test(trimmed)) {
-      pushParagraph();
-      pushBlock("rule");
-      continue;
-    }
-
-    const quote = trimmed.match(/^>\s*(.+)$/);
-    if (quote) {
-      pushParagraph();
-      pushBlock("quote", cleanMarkdownInline(quote[1]));
-      continue;
-    }
-
-    const listItem = trimmed.match(/^([-*+]|\d+[.)])\s+(.+)$/);
-    if (listItem) {
-      pushParagraph();
-      pushBlock("list", cleanMarkdownInline(listItem[2]));
-      continue;
-    }
-
-    if (
-      paragraphBuffer.length &&
-      !continuesSourceParagraph(paragraphBuffer.at(-1)) &&
-      (hasSourceParagraphIndent(line) || shouldStartSourceParagraph(paragraphBuffer.at(-1), trimmed))
-    ) {
-      pushParagraph();
-    }
-
-    paragraphBuffer.push(trimmed);
-  }
-
-  pushParagraph();
-
-  if (blocks.some((item) => item.text || item.kind === "rule")) return normalizeParsedBlocks(blocks);
-
-  return normalizeParsedBlocks(splitLongParagraph(cleanMarkdownInline(normalized)).map((text, index) => ({
-    id: `jiyuan-${index + 1}`,
-    text,
-    kind: "paragraph",
-    continued: index > 0,
-  })));
-}
-
-function firstSelectableId(blocks: BookBlock[]) {
-  return (
-    blocks.find((item) => ["paragraph", "quote", "list"].includes(item.kind))?.id ??
-    blocks.find((item) => item.kind !== "rule")?.id ??
-    placeholderPassages[0].id
-  );
-}
 
 function readingBlockClass(block: BookBlock, highlighted: boolean, theme: ReaderTheme) {
   const marked = highlighted ? "bg-[#f4df8c]/35" : "";
@@ -464,6 +194,7 @@ function readingBlockStyle(block: BookBlock, fontSize: number, lineHeight: numbe
   return {
     fontSize: `${block.kind === "quote" || block.kind === "list" ? fontSize - 1 : fontSize}px`,
     lineHeight,
+    ...(shouldIndentBlock(block) ? { textIndent: "2em" } : undefined),
   };
 }
 
@@ -522,47 +253,9 @@ function paginateBookBlocks(
   return pages.length ? pages : [placeholderPassages];
 }
 
-function findPageIndexForBlock(pages: BookBlock[][], blockId: string) {
-  const pageIndex = pages.findIndex((page) => page.some((block) => block.id === blockId));
-  return pageIndex >= 0 ? pageIndex : 0;
-}
-
-function pagesSignature(pages: BookBlock[][]) {
-  return pages.map((page) => page.map((block) => block.id).join(",")).join("|");
-}
-
-function paginateMeasuredBookBlocks(
-  blocks: BookBlock[],
-  measuredHeights: Map<string, number>,
-  capacity: number,
-) {
-  const safeCapacity = Math.max(160, capacity - 8);
-  const pages: BookBlock[][] = [];
-  let current: BookBlock[] = [];
-  let currentHeight = 0;
-
-  for (const block of blocks) {
-    const height = measuredHeights.get(block.id) ?? 0;
-    const shouldStartHeadingPage =
-      block.kind === "heading" && block.level && block.level <= 2 && currentHeight > safeCapacity * 0.35;
-
-    if (current.length && (currentHeight + height > safeCapacity || shouldStartHeadingPage)) {
-      pages.push(current);
-      current = [];
-      currentHeight = 0;
-    }
-
-    current.push(block);
-    currentHeight += height;
-  }
-
-  if (current.length) pages.push(current);
-  return pages.length ? pages : [placeholderPassages];
-}
-
 export default function BookCompanion() {
   const mobileReaderRef = useRef<HTMLDivElement>(null);
-  const mobileMeasureRef = useRef<HTMLDivElement>(null);
+  const mobileFlowRef = useRef<HTMLDivElement>(null);
   const [passages, setPassages] = useState(placeholderPassages);
   const [selectedPassage, setSelectedPassage] = useState(placeholderPassages[0].id);
   const [partner, setPartner] = useState(partners[0].id);
@@ -571,8 +264,23 @@ export default function BookCompanion() {
   const [panel, setPanel] = useState<Panel>("ask");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectionToolsOpen, setSelectionToolsOpen] = useState(false);
-  const [question, setQuestion] = useState("这段话和《纪元》的主题有什么关系？");
-  const [companionAnswer, setCompanionAnswer] = useState("");
+  const [question, setQuestion] = useState("");
+  const [askMessages, setAskMessages] = useState<AskMessage[]>([]);
+  const [askScope, setAskScope] = useState<"passage" | "book">("passage");
+  const [bookSessionId, setBookSessionId] = useState<string | null>(null);
+  const [bookSynced, setBookSynced] = useState(false);
+  // Native text selection (long-press / drag) inside the reader. Takes
+  // precedence over block-level selection as the 问书 target.
+  const [nativeSelection, setNativeSelection] = useState<{ text: string; anchorId: string } | null>(
+    null,
+  );
+  // Reading position waiting to be restored once pagination is measured.
+  const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
+  const restoredRef = useRef(false);
+  // Horizontal swipe state. The drag follows the finger by mutating the flow
+  // element's transform directly — going through React state would reconcile
+  // the entire book on every touchmove and freeze large books.
+  const swipeRef = useRef<{ startX: number; startY: number; active: boolean; dx: number } | null>(null);
   const [dialogueTranscript, setDialogueTranscript] = useState("");
   const [notes, setNotes] = useState(initialNotes);
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
@@ -582,7 +290,10 @@ export default function BookCompanion() {
   const [lineHeight, setLineHeight] = useState(2.05);
   const [pageIndex, setPageIndex] = useState(0);
   const [activeLayout, setActiveLayout] = useState<ReaderLayout>("mobile");
-  const [measuredMobilePages, setMeasuredMobilePages] = useState<BookBlock[][] | null>(null);
+  // Line-level pagination: the whole text flows through a CSS multi-column
+  // container; each column is one page, shifted into view via translateX.
+  const [flowSize, setFlowSize] = useState<{ w: number; h: number } | null>(null);
+  const [mobilePageCount, setMobilePageCount] = useState(0);
   const [asking, setAsking] = useState(false);
   const [generatingDialogue, setGeneratingDialogue] = useState(false);
   const [error, setError] = useState("");
@@ -605,35 +316,17 @@ export default function BookCompanion() {
   const hasImportedText = passages[0]?.id !== "placeholder";
   const readingTitle =
     (hasImportedText && passages.find((item) => item.kind === "heading")?.text) || chapterTitle;
-  const visiblePassages = useMemo(
-    () =>
-      passages.filter(
-        (passage, index) =>
-          !(index === 0 && passage.kind === "heading" && passage.text === readingTitle),
-      ),
-    [passages, readingTitle],
-  );
-  const estimatedMobilePages = useMemo(
-    () => paginateBookBlocks(visiblePassages, fontSize, lineHeight, "mobile"),
-    [fontSize, lineHeight, visiblePassages],
-  );
-  const mobilePages = useMemo(
-    () => measuredMobilePages ?? estimatedMobilePages,
-    [estimatedMobilePages, measuredMobilePages],
-  );
   const desktopPages = useMemo(
     () => paginateBookBlocks(passages, fontSize, lineHeight, "desktop"),
     [fontSize, lineHeight, passages],
   );
-  const mobileSafePageIndex = Math.min(pageIndex, Math.max(mobilePages.length - 1, 0));
+  const mobileSafePageIndex = Math.min(pageIndex, Math.max(mobilePageCount - 1, 0));
   const desktopSafePageIndex = Math.min(pageIndex, Math.max(desktopPages.length - 1, 0));
-  const currentMobilePageBlocks =
-    mobilePages[mobileSafePageIndex] ?? mobilePages[0] ?? placeholderPassages;
   const currentDesktopPageBlocks =
     desktopPages[desktopSafePageIndex] ?? desktopPages[0] ?? placeholderPassages;
   const readableBlockCount = passages.filter((item) => item.kind !== "rule").length;
   const mobileReadingProgress = hasImportedText
-    ? Math.max(1, Math.round(((mobileSafePageIndex + 1) / Math.max(mobilePages.length, 1)) * 100))
+    ? Math.max(1, Math.round(((mobileSafePageIndex + 1) / Math.max(mobilePageCount, 1)) * 100))
     : 0;
   const desktopReadingProgress = hasImportedText
     ? Math.max(1, Math.round(((desktopSafePageIndex + 1) / Math.max(desktopPages.length, 1)) * 100))
@@ -641,6 +334,14 @@ export default function BookCompanion() {
   const tocItems = useMemo(
     () => passages.filter((item) => item.kind === "heading" && item.text.trim()),
     [passages],
+  );
+
+  // The whole book renders into the column flow once; memoizing keeps page
+  // turns and drawer state changes from reconciling thousands of blocks.
+  const mobileReadingContent = useMemo(
+    () => renderReadingBlocks(passages, "mobile", 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [passages, highlightedIds, themeId, fontSize, lineHeight, readingTitle],
   );
 
   const dialogueContext = useMemo(() => {
@@ -663,52 +364,115 @@ export default function BookCompanion() {
           setPageIndex(0);
         }
       }
+      // Restore reader settings + reading position (anchor resolved to a
+      // page index once pagination is ready).
+      const state = parseReaderState(
+        window.localStorage.getItem("book-companion:jiyuan:state"),
+      );
+      if (state) {
+        setFontSize(state.fontSize);
+        setLineHeight(state.lineHeight);
+        setThemeId(state.themeId);
+        if (state.notes.length) setNotes(state.notes);
+        setHighlightedIds(state.highlightedIds);
+        setAskMessages(state.askMessages);
+        if (state.anchorBlockId) setPendingAnchor(state.anchorBlockId);
+      }
+      restoredRef.current = true;
     }, 0);
     return () => window.clearTimeout(id);
   }, []);
 
+  // Resolve the saved anchor block to a page index once the flow is measured.
   useEffect(() => {
-    let frame = 0;
+    if (!pendingAnchor || mobilePageCount <= 0) return;
+    const frame = window.requestAnimationFrame(() => {
+      const target = pageIndexForBlockId(pendingAnchor);
+      setPageIndex(target);
+      setSelectedPassage(pendingAnchor);
+      setPendingAnchor(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAnchor, mobilePageCount]);
+
+  // Persist reader state on every meaningful change (after initial restore).
+  useEffect(() => {
+    if (!restoredRef.current) return;
+    window.localStorage.setItem(
+      "book-companion:jiyuan:state",
+      serializeReaderState({
+        anchorBlockId: selectedPassage === "placeholder" ? null : selectedPassage,
+        fontSize,
+        lineHeight,
+        themeId,
+        notes,
+        highlightedIds,
+        askMessages,
+      }),
+    );
+  }, [selectedPassage, fontSize, lineHeight, themeId, notes, highlightedIds, askMessages]);
+
+  // Capture native text selections made inside the reader. The last
+  // non-empty selection is kept even after the browser collapses it (tapping
+  // a button clears the selection before the click handler runs).
+  useEffect(() => {
+    const onSelectionChange = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed) return;
+      const text = selection.toString().replace(/\s+/g, " ").trim();
+      if (text.length < 4) return;
+      const node = selection.anchorNode;
+      const el = node instanceof Element ? node : node?.parentElement;
+      const chunk = el?.closest?.("[data-chunk-id]") as HTMLElement | null;
+      if (!chunk) return;
+      setNativeSelection({ text, anchorId: chunk.dataset.chunkId ?? "" });
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => document.removeEventListener("selectionchange", onSelectionChange);
+  }, []);
+
+  // Track the reader viewport's content-box size (page width/height).
+  useEffect(() => {
+    const reader = mobileReaderRef.current;
+    if (!reader) return;
+
     const measure = () => {
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        const reader = mobileReaderRef.current;
-        const measurer = mobileMeasureRef.current;
-        if (!reader || !measurer || !visiblePassages.length) return;
-
-        const measuredHeights = new Map<string, number>();
-        for (const element of Array.from(measurer.querySelectorAll<HTMLElement>("[data-book-block-id]"))) {
-          const style = window.getComputedStyle(element);
-          const marginTop = Number.parseFloat(style.marginTop) || 0;
-          const marginBottom = Number.parseFloat(style.marginBottom) || 0;
-          measuredHeights.set(
-            element.dataset.bookBlockId ?? "",
-            element.getBoundingClientRect().height + marginTop + marginBottom,
-          );
-        }
-
-        const nextPages = paginateMeasuredBookBlocks(
-          visiblePassages,
-          measuredHeights,
-          reader.getBoundingClientRect().height,
+      const cs = window.getComputedStyle(reader);
+      const w =
+        reader.clientWidth -
+        (Number.parseFloat(cs.paddingLeft) || 0) -
+        (Number.parseFloat(cs.paddingRight) || 0);
+      const h =
+        reader.clientHeight -
+        (Number.parseFloat(cs.paddingTop) || 0) -
+        (Number.parseFloat(cs.paddingBottom) || 0);
+      if (w > 0 && h > 0) {
+        setFlowSize((current) =>
+          current && current.w === w && current.h === h ? current : { w, h },
         );
-
-        setMeasuredMobilePages((current) =>
-          current && pagesSignature(current) === pagesSignature(nextPages) ? current : nextPages,
-        );
-      });
+      }
     };
 
     measure();
     const observer = new ResizeObserver(measure);
-    if (mobileReaderRef.current) observer.observe(mobileReaderRef.current);
-    if (mobileMeasureRef.current) observer.observe(mobileMeasureRef.current);
+    observer.observe(reader);
+    return () => observer.disconnect();
+  }, [hasImportedText]);
 
-    return () => {
-      window.cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [fontSize, lineHeight, themeId, visiblePassages]);
+  // Recount pages whenever the flow re-renders (text/font/theme/size changes).
+  useEffect(() => {
+    if (!flowSize) return;
+    let frame = 0;
+    frame = window.requestAnimationFrame(() => {
+      const flow = mobileFlowRef.current;
+      if (!flow) return;
+      const stride = flowSize.w + PAGE_GAP;
+      const count = Math.max(1, Math.round((flow.scrollWidth + PAGE_GAP) / stride));
+      setMobilePageCount(count);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [flowSize, fontSize, lineHeight, themeId, passages]);
 
   function openDrawer(nextPanel: Panel, layout: ReaderLayout = activeLayout) {
     setActiveLayout(layout);
@@ -723,27 +487,107 @@ export default function BookCompanion() {
     setThemeId(order[(index + 1) % order.length]);
   }
 
-  function pagesForLayout(layout: ReaderLayout) {
-    return layout === "mobile" ? mobilePages : desktopPages;
+  function pageCountForLayout(layout: ReaderLayout) {
+    return layout === "mobile" ? mobilePageCount : desktopPages.length;
   }
 
   function goToPage(nextPageIndex: number, layout: ReaderLayout = activeLayout) {
-    const targetPages = pagesForLayout(layout);
-    const next = Math.min(Math.max(nextPageIndex, 0), Math.max(targetPages.length - 1, 0));
-    const nextPage = targetPages[next] ?? targetPages[0] ?? placeholderPassages;
+    const count = Math.max(pageCountForLayout(layout), 1);
+    const next = Math.min(Math.max(nextPageIndex, 0), count - 1);
     setActiveLayout(layout);
     setPageIndex(next);
-    setSelectedPassage(firstSelectableId(nextPage));
+    // Keep the "current passage" in sync with the reading position so 问书
+    // always talks about what the reader is actually looking at.
+    if (layout === "mobile") {
+      const id = firstChunkIdOnPage(next);
+      if (id) setSelectedPassage(id);
+    }
+    setNativeSelection(null);
     setSelectionToolsOpen(false);
     setDrawerOpen(false);
   }
 
+  // In column pagination the page of a block is derived from its horizontal
+  // position inside the flow container.
+  function pageIndexForBlockId(blockId: string) {
+    const flow = mobileFlowRef.current;
+    if (!flow || !flowSize) return 0;
+    const el = flow.querySelector<HTMLElement>(`[data-chunk-id="${CSS.escape(blockId)}"]`);
+    if (!el) return 0;
+    const delta = el.getBoundingClientRect().left - flow.getBoundingClientRect().left;
+    return Math.max(0, Math.floor(delta / (flowSize.w + PAGE_GAP)));
+  }
+
+  // --- Swipe page-turning (WeRead-style drag + snap) ---
+  function onReaderTouchStart(e: React.TouchEvent) {
+    const t = e.touches[0];
+    swipeRef.current = { startX: t.clientX, startY: t.clientY, active: false, dx: 0 };
+  }
+
+  function flowBaseX() {
+    return -(mobileSafePageIndex * ((flowSize?.w ?? 0) + PAGE_GAP));
+  }
+
+  function onReaderTouchMove(e: React.TouchEvent) {
+    const s = swipeRef.current;
+    const flow = mobileFlowRef.current;
+    if (!s || !flow) return;
+    const t = e.touches[0];
+    const dx = t.clientX - s.startX;
+    const dy = t.clientY - s.startY;
+    if (!s.active) {
+      // commit to a horizontal swipe only when clearly horizontal,
+      // and never while the user is selecting text
+      if (Math.abs(dx) < 12 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed) return;
+      s.active = true;
+    }
+    const atStart = mobileSafePageIndex <= 0 && dx > 0;
+    const atEnd = mobileSafePageIndex >= mobilePageCount - 1 && dx < 0;
+    s.dx = atStart || atEnd ? dx * 0.35 : dx;
+    flow.style.transform = `translateX(${flowBaseX() + s.dx}px)`;
+  }
+
+  function onReaderTouchEnd() {
+    const s = swipeRef.current;
+    const flow = mobileFlowRef.current;
+    swipeRef.current = null;
+    if (!s?.active || !flow) return;
+    const threshold = Math.min(60, (flowSize?.w ?? 320) * 0.18);
+    if (s.dx <= -threshold && mobileSafePageIndex < mobilePageCount - 1) {
+      goToPage(mobileSafePageIndex + 1, "mobile");
+    } else if (s.dx >= threshold && mobileSafePageIndex > 0) {
+      goToPage(mobileSafePageIndex - 1, "mobile");
+    } else {
+      // snap back to the current page
+      flow.style.transform = `translateX(${flowBaseX()}px)`;
+    }
+  }
+
+  /** First chunk whose start position lies on the given page. */
+  function firstChunkIdOnPage(targetPage: number): string | null {
+    const flow = mobileFlowRef.current;
+    if (!flow || !flowSize) return null;
+    const stride = flowSize.w + PAGE_GAP;
+    const flowLeft = flow.getBoundingClientRect().left;
+    let best: { id: string; left: number; top: number } | null = null;
+    for (const el of Array.from(flow.querySelectorAll<HTMLElement>("[data-chunk-id]"))) {
+      const rect = el.getBoundingClientRect();
+      const left = rect.left - flowLeft;
+      if (Math.floor((left + 2) / stride) !== targetPage) continue;
+      if (!best || rect.top < best.top) {
+        best = { id: el.dataset.chunkId ?? "", left, top: rect.top };
+      }
+    }
+    return best?.id || null;
+  }
+
   function selectBlock(block: BookBlock, layout: ReaderLayout = activeLayout) {
     if (block.kind === "rule") return;
-    const targetPages = pagesForLayout(layout);
     setActiveLayout(layout);
     setSelectedPassage(block.id);
-    setPageIndex(findPageIndexForBlock(targetPages, block.id));
+    setNativeSelection(null);
     setSelectionToolsOpen(true);
   }
 
@@ -758,7 +602,9 @@ export default function BookCompanion() {
     setSelectedPassage(firstSelectableId(next));
     setPageIndex(0);
     setSelectionToolsOpen(false);
-    setCompanionAnswer("");
+    setAskMessages([]);
+    setBookSessionId(null);
+    setBookSynced(false);
     setDialogueTranscript("");
     setError("");
   }
@@ -774,7 +620,6 @@ export default function BookCompanion() {
     setPassages(next);
     setSelectedPassage(firstSelectableId(next));
     setPageIndex(0);
-    setMeasuredMobilePages(null);
     setSelectionToolsOpen(false);
     setDrawerOpen(false);
     setError("");
@@ -794,7 +639,9 @@ export default function BookCompanion() {
     setPageIndex(0);
     setImportText("");
     setSelectionToolsOpen(false);
-    setCompanionAnswer("");
+    setAskMessages([]);
+    setBookSessionId(null);
+    setBookSynced(false);
     setDialogueTranscript("");
   }
 
@@ -807,7 +654,7 @@ export default function BookCompanion() {
   }
 
   function saveSelectionAsNote() {
-    const text = activePassage.text.trim();
+    const text = (nativeSelection?.text ?? activePassage.text).trim();
     if (!text) return;
     setNotes((items) => [`摘录：${text.slice(0, 180)}${text.length > 180 ? "..." : ""}`, ...items]);
     openDrawer("notes");
@@ -818,31 +665,99 @@ export default function BookCompanion() {
     if (!cleanQuestion || asking) return;
 
     openDrawer("ask");
-    setQuestion(cleanQuestion);
+    setQuestion("");
     setAsking(true);
     setError("");
-    setCompanionAnswer("");
+
+    const history = askMessages.slice(-8);
+    setAskMessages((current) => [
+      ...current,
+      { role: "user", content: cleanQuestion },
+      { role: "assistant", content: "" },
+    ]);
 
     try {
+      if (askScope === "book") {
+        // Whole-book mode: Open Notebook gateway (multi-turn via its session)
+        const raw = window.localStorage.getItem("book-companion:jiyuan:text") || "";
+        const response = await fetch("/api/book/ask-book", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            question: cleanQuestion,
+            sessionId: bookSessionId ?? undefined,
+            syncText: bookSynced ? undefined : raw,
+          }),
+        });
+        const data = (await response.json().catch(() => ({}))) as {
+          answer?: string;
+          sessionId?: string;
+          error?: string;
+        };
+        if (!response.ok) throw new Error(data.error || "全书问答失败");
+        if (data.sessionId) setBookSessionId(data.sessionId);
+        setBookSynced(true);
+        const answer = data.answer?.trim() || "";
+        if (!answer) throw new Error("全书问答为空，请重试");
+        setAskMessages((current) => {
+          const next = [...current];
+          next[next.length - 1] = { role: "assistant", content: answer };
+          return next;
+        });
+        return;
+      }
+
+      // Native text selection wins; otherwise the active block.
+      const anchorId = nativeSelection?.anchorId ?? activePassage.id;
+      const context = buildAskContext(passages, anchorId);
+      const passageText = nativeSelection?.text || context.passage || activePassage.text;
+      // Spoiler-safe RAG: retrieve relevant excerpts from already-read blocks
+      // so questions about earlier chapters get grounded answers.
+      const retrieved = searchReadBlocks(passages, anchorId, cleanQuestion, 5)
+        .map((hit) => hit.text)
+        .filter((text) => !context.before.includes(text) && text !== passageText);
       const response = await fetch("/api/book/companion", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          chapterTitle,
-          passage: activePassage.text,
+          chapterTitle: readingTitle,
+          passage: passageText,
+          before: context.before,
+          retrieved,
           question: cleanQuestion,
           mode,
           notes,
+          history,
         }),
       });
-      const data = (await response.json().catch(() => ({}))) as {
-        answer?: string;
-        error?: string;
-      };
-      if (!response.ok) throw new Error(data.error || "陪读回答生成失败");
-      setCompanionAnswer(data.answer?.trim() || "这段可以理解为一种对体面话术的怀疑。");
+      if (!response.ok || !response.body) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "陪读回答生成失败");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let answer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        answer += decoder.decode(value, { stream: true });
+        const snapshot = answer;
+        setAskMessages((current) => {
+          const next = [...current];
+          next[next.length - 1] = { role: "assistant", content: snapshot };
+          return next;
+        });
+      }
+      if (!answer.trim()) throw new Error("陪读回答为空，请重试");
     } catch (err) {
       setError(err instanceof Error ? err.message : "陪读回答生成失败");
+      // roll back the empty assistant bubble (keep the user's question visible)
+      setAskMessages((current) =>
+        current.length && current[current.length - 1].content === ""
+          ? current.slice(0, -1)
+          : current,
+      );
     } finally {
       setAsking(false);
     }
@@ -885,7 +800,8 @@ export default function BookCompanion() {
   }
 
   function saveAnswerAsNote() {
-    const text = companionAnswer.trim();
+    const lastAnswer = [...askMessages].reverse().find((m) => m.role === "assistant");
+    const text = lastAnswer?.content.trim();
     if (!text) return;
     setNotes((items) => [text, ...items]);
     openDrawer("notes");
@@ -899,68 +815,98 @@ export default function BookCompanion() {
   }
 
   function renderReadingBlocks(blocks: BookBlock[], layout: ReaderLayout, currentPageIndex: number) {
-    return blocks.map((passage, index) => {
-      const highlighted = highlightedIds.includes(passage.id);
+    // Group consecutive paragraph chunks of the same source paragraph so they
+    // render inline inside one <p> — mid-sentence splits must not break lines.
+    const groups: BookBlock[][] = [];
+    blocks.forEach((passage, index) => {
       if (currentPageIndex === 0 && index === 0 && passage.kind === "heading" && passage.text === readingTitle) {
-        return null;
+        return;
       }
-      if (passage.kind === "rule") {
-        return <div key={passage.id} className="mx-auto my-9 h-px w-24 bg-current/20" />;
+      const lastGroup = groups[groups.length - 1];
+      if (
+        passage.kind === "paragraph" &&
+        passage.continued &&
+        lastGroup &&
+        lastGroup[0].kind === "paragraph"
+      ) {
+        lastGroup.push(passage);
+      } else {
+        groups.push([passage]);
       }
-      return (
-        <button
-          key={passage.id}
-          type="button"
-          onClick={() => selectBlock(passage, layout)}
-          style={readingBlockStyle(passage, fontSize, lineHeight)}
-          className={classNames(
-            passage.continued ? "mb-0 break-inside-avoid" : "mb-3 break-inside-avoid",
-            readingBlockClass(passage, highlighted, theme),
-          )}
-        >
-          {passage.kind === "list" && (
-            <span className="mr-2 font-semibold text-[#1f8a70]">•</span>
-          )}
-          {shouldIndentBlock(passage) && (
-            <span aria-hidden="true" className="inline-block w-[2em]" />
-          )}
-          <span>{passage.text}</span>
-        </button>
-      );
     });
-  }
 
-  function renderMeasuredBlocks(blocks: BookBlock[]) {
-    return blocks.map((passage) => {
-      const highlighted = highlightedIds.includes(passage.id);
-      if (passage.kind === "rule") {
+    return groups.map((group) => {
+      const first = group[0];
+      if (first.kind === "rule") {
+        return <div key={first.id} className="mx-auto my-9 h-px w-24 bg-current/20" />;
+      }
+      if (first.kind !== "paragraph") {
+        const highlighted = highlightedIds.includes(first.id);
         return (
           <div
-            key={passage.id}
-            data-book-block-id={passage.id}
-            className="mx-auto my-9 h-px w-24 bg-current/20"
-          />
+            key={first.id}
+            data-reading-block={first.kind}
+            data-chunk-id={first.id}
+            role="button"
+            tabIndex={0}
+            onClick={() => selectBlock(first, layout)}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") selectBlock(first, layout); }}
+            style={readingBlockStyle(first, fontSize, lineHeight)}
+            className={classNames(
+              "cursor-pointer mt-3 break-inside-avoid",
+              // Major chapters always start on a fresh page (column).
+              first.kind === "heading" && (first.level ?? 1) <= 2 && "break-before-column",
+              readingBlockClass(first, highlighted, theme),
+            )}
+          >
+            {first.kind === "list" && (
+              <span className="mr-2 font-semibold text-[#1f8a70]">•</span>
+            )}
+            <span>{first.text}</span>
+          </div>
         );
       }
-
+      // No break-inside-avoid: paragraphs must flow across page (column)
+      // boundaries line by line, like a real book.
       return (
-        <div
-          key={passage.id}
-          data-book-block-id={passage.id}
-          style={readingBlockStyle(passage, fontSize, lineHeight)}
+        <p
+          key={first.id}
+          data-reading-block="paragraph"
+          style={{
+            fontSize: `${fontSize}px`,
+            lineHeight,
+            // Allow single lines at page boundaries (like WeRead) so pages
+            // fill completely instead of pushing whole paragraphs over.
+            orphans: 1,
+            widows: 1,
+            ...(first.continued ? undefined : { textIndent: "2em" }),
+          }}
           className={classNames(
-            passage.continued ? "mb-0 break-inside-avoid" : "mb-3 break-inside-avoid",
-            readingBlockClass(passage, highlighted, theme),
+            first.continued ? "mt-0" : "mt-3",
+            "px-1.5 py-1 text-left tracking-[0.01em]",
+            theme.text,
           )}
         >
-          {passage.kind === "list" && (
-            <span className="mr-2 font-semibold text-[#1f8a70]">•</span>
-          )}
-          {shouldIndentBlock(passage) && (
-            <span aria-hidden="true" className="inline-block w-[2em]" />
-          )}
-          <span>{passage.text}</span>
-        </div>
+          {group.map((chunk) => {
+            const highlighted = highlightedIds.includes(chunk.id);
+            return (
+              <span
+                key={chunk.id}
+                data-chunk-id={chunk.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => selectBlock(chunk, layout)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") selectBlock(chunk, layout); }}
+                className={classNames(
+                  "cursor-pointer rounded-[4px] box-decoration-clone transition",
+                  highlighted && "bg-[#f4df8c]/35",
+                )}
+              >
+                {chunk.text}
+              </span>
+            );
+          })}
+        </p>
       );
     });
   }
@@ -995,8 +941,17 @@ export default function BookCompanion() {
 
       <section className="relative mx-auto w-full md:max-w-[430px]">
         <article
+          onClick={(e) => {
+            // Taps landing on the article's own padding (below the reader)
+            // page-flip too — same zones as the reader itself.
+            if (e.target !== e.currentTarget || !hasImportedText) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const ratio = (e.clientX - rect.left) / rect.width;
+            if (ratio < 0.3) goToPage(mobileSafePageIndex - 1, "mobile");
+            else if (ratio > 0.7) goToPage(mobileSafePageIndex + 1, "mobile");
+          }}
           className={classNames(
-            "relative min-h-[100dvh] overflow-hidden px-6 pb-[150px] md:min-h-[calc(100vh-64px)] md:rounded-[32px] md:shadow-2xl md:shadow-black/40",
+            "relative flex min-h-[100dvh] flex-col overflow-hidden px-6 pb-[88px] md:min-h-[calc(100vh-64px)] md:rounded-[32px] md:shadow-2xl md:shadow-black/40",
             theme.page,
           )}
         >
@@ -1009,7 +964,7 @@ export default function BookCompanion() {
             <button
               type="button"
               onClick={() => openDrawer("toc", "mobile")}
-              className={classNames("grid h-10 w-10 place-items-center rounded-full text-xl", theme.hover)}
+              className={classNames("grid h-10 w-10 place-items-center rounded-full text-xl", theme.text, theme.hover)}
               aria-label="目录"
             >
               ☰
@@ -1018,23 +973,20 @@ export default function BookCompanion() {
               <div className={classNames("truncate text-[16px] font-semibold", theme.text)}>
                 {readingTitle}
               </div>
-              <div className={classNames("mt-0.5 text-[11px]", theme.muted)}>
-                {hasImportedText ? `${mobileSafePageIndex + 1} / ${mobilePages.length}` : bookSubtitle}
+              <div data-page-indicator className={classNames("mt-0.5 text-[11px]", theme.muted)}>
+                {hasImportedText
+                  ? `${mobileSafePageIndex + 1} / ${mobilePageCount} · ${mobileReadingProgress}%`
+                  : bookSubtitle}
               </div>
             </div>
             <button
               type="button"
               onClick={() => openDrawer("settings", "mobile")}
-              className={classNames("grid h-10 w-10 place-items-center rounded-full text-[17px] font-semibold", theme.hover)}
+              className={classNames("grid h-10 w-10 place-items-center rounded-full text-[17px] font-semibold", theme.text, theme.hover)}
               aria-label="设置"
             >
               A
             </button>
-          </div>
-
-          <div className={classNames("mt-5 flex items-center justify-between text-[12px]", theme.muted)}>
-            <span>{mobileSafePageIndex + 1}</span>
-            <span>{mobileReadingProgress}%</span>
           </div>
 
           {!hasImportedText && (
@@ -1046,7 +998,7 @@ export default function BookCompanion() {
                 {readingTitle}
               </h1>
               <div className={classNames("mt-3 text-xs", theme.muted)}>
-                {hasImportedText ? `${readableBlockCount} 个阅读块 · ${mobilePages.length} 页` : "等待导入正文"}
+                {hasImportedText ? `${readableBlockCount} 个阅读块 · ${mobilePageCount} 页` : "等待导入正文"}
               </div>
             </div>
           )}
@@ -1093,20 +1045,48 @@ export default function BookCompanion() {
           {hasImportedText && (
             <div
               ref={mobileReaderRef}
-              className="h-[calc(100dvh-282px)] overflow-hidden px-1 pb-4 md:h-[calc(100vh-314px)]"
+              onTouchStart={onReaderTouchStart}
+              onTouchMove={onReaderTouchMove}
+              onTouchEnd={onReaderTouchEnd}
+              onTouchCancel={onReaderTouchEnd}
+              style={{ touchAction: "pan-y" }}
+              onClickCapture={(e) => {
+                // WeRead-style tap zones: left 30% = prev page, right 30% =
+                // next page. Capture phase stops the tap from reaching chunk
+                // spans; the middle 40% falls through to text selection.
+                const rect = e.currentTarget.getBoundingClientRect();
+                const ratio = (e.clientX - rect.left) / rect.width;
+                if (ratio < 0.3) {
+                  e.stopPropagation();
+                  goToPage(mobileSafePageIndex - 1, "mobile");
+                } else if (ratio > 0.7) {
+                  e.stopPropagation();
+                  goToPage(mobileSafePageIndex + 1, "mobile");
+                }
+              }}
+              className={classNames(
+                "mt-4 min-h-0 flex-1 overflow-hidden px-1 pb-4 transition-opacity duration-150",
+                mobilePageCount > 0 ? "opacity-100" : "opacity-0",
+              )}
             >
-              {renderReadingBlocks(currentMobilePageBlocks, "mobile", mobileSafePageIndex)}
-            </div>
-          )}
-
-          {hasImportedText && (
-            <div
-              ref={mobileMeasureRef}
-              aria-hidden="true"
-              className="pointer-events-none absolute left-6 right-6 top-24 opacity-0"
-              style={{ visibility: "hidden" }}
-            >
-              {renderMeasuredBlocks(visiblePassages)}
+              {flowSize && (
+                <div
+                  ref={mobileFlowRef}
+                  style={{
+                    height: flowSize.h,
+                    columnWidth: flowSize.w,
+                    columnGap: PAGE_GAP,
+                    columnFill: "auto",
+                    // No transition: the multi-column canvas is far wider than
+                    // the GPU texture limit, so it can't be composited — an
+                    // animated transform repaints it on the main thread every
+                    // frame and freezes large books. Instant flip = one paint.
+                    transform: `translateX(${-(mobileSafePageIndex * (flowSize.w + PAGE_GAP))}px)`,
+                  }}
+                >
+                  {mobileReadingContent}
+                </div>
+              )}
             </div>
           )}
         </article>
@@ -1194,7 +1174,7 @@ export default function BookCompanion() {
                 {[
                   ["划线", toggleHighlight],
                   ["笔记", saveSelectionAsNote],
-                  ["问书", () => void askCompanion("解释")],
+                  ["问书", () => openDrawer("ask")],
                   ["对谈", () => void generateDialogue()],
                   ["听书", () => openDrawer("listen", "desktop")],
                 ].map(([label, action]) => (
@@ -1244,7 +1224,7 @@ export default function BookCompanion() {
               {[
                 ["划线", toggleHighlight],
                 ["笔记", saveSelectionAsNote],
-                ["问书", () => void askCompanion("解释")],
+                ["问书", () => openDrawer("ask")],
                 ["对谈", () => void generateDialogue()],
                 ["听书", () => openDrawer("listen", "mobile")],
               ].map(([label, action]) => (
@@ -1269,27 +1249,6 @@ export default function BookCompanion() {
           )}
         >
           <div className="mx-auto max-w-[430px]">
-            <div className="mb-3 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-              <button
-                type="button"
-                onClick={() => goToPage(mobileSafePageIndex - 1, "mobile")}
-                disabled={mobileSafePageIndex <= 0}
-                className={classNames("h-11 rounded-full border border-current/15 px-4 text-sm font-semibold disabled:opacity-35", theme.hover)}
-              >
-                ‹ 上页
-              </button>
-              <div className={classNames("min-w-[72px] rounded-full bg-current/10 px-3 py-2 text-[12px] font-semibold", theme.muted)}>
-                {mobileSafePageIndex + 1}/{mobilePages.length}
-              </div>
-              <button
-                type="button"
-                onClick={() => goToPage(mobileSafePageIndex + 1, "mobile")}
-                disabled={mobileSafePageIndex >= mobilePages.length - 1}
-                className={classNames("h-11 rounded-full border border-current/15 px-4 text-sm font-semibold disabled:opacity-35", theme.hover)}
-              >
-                下页 ›
-              </button>
-            </div>
             <div className="grid grid-cols-5 gap-2">
               {[
                 ["☰", "目录", () => openDrawer("toc", "mobile")],
@@ -1337,7 +1296,7 @@ export default function BookCompanion() {
                       onClick={() => setPanel(id as Panel)}
                       className={classNames(
                         "shrink-0 rounded-full px-3 py-2 transition",
-                        panel === id && "bg-[#1f8a70] text-white shadow-sm",
+                        panel === id ? "bg-[#1f8a70] text-white shadow-sm" : "opacity-65",
                       )}
                     >
                       {label}
@@ -1370,7 +1329,7 @@ export default function BookCompanion() {
                       type="button"
                       onClick={() => {
                         setSelectedPassage(item.id);
-                        setPageIndex(findPageIndexForBlock(pagesForLayout(activeLayout), item.id));
+                        setPageIndex(pageIndexForBlockId(item.id));
                         setDrawerOpen(false);
                         setSelectionToolsOpen(false);
                       }}
@@ -1431,12 +1390,90 @@ export default function BookCompanion() {
 
             {panel === "ask" && (
               <div className="space-y-3">
-                <div className={classNames("rounded-[16px] border p-3", theme.card)}>
-                  <p className={classNames("text-xs font-semibold", theme.muted)}>当前选中</p>
-                  <p className={classNames("mt-2 line-clamp-3 text-sm leading-relaxed", theme.text)}>
-                    {activePassage.text}
-                  </p>
+                <div className={classNames("flex gap-1 rounded-full bg-current/10 p-1 text-sm font-medium", theme.text)}>
+                  {([
+                    ["passage", "问段落"],
+                    ["book", "问全书"],
+                  ] as const).map(([scope, label]) => (
+                    <button
+                      key={scope}
+                      type="button"
+                      onClick={() => setAskScope(scope)}
+                      className={classNames(
+                        "flex-1 rounded-full px-3 py-2 transition",
+                        askScope === scope ? "bg-[#1f8a70] text-white shadow-sm" : "opacity-65",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
+
+                <div className={classNames("rounded-[16px] border p-3", theme.card)}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      {askScope === "passage" ? (
+                        <>
+                          <p className={classNames("text-xs font-semibold", theme.muted)}>
+                            {nativeSelection ? "已选文字" : "当前选中"}
+                          </p>
+                          <p className={classNames("mt-2 line-clamp-3 text-sm leading-relaxed", theme.text)}>
+                            {nativeSelection?.text ?? activePassage.text}
+                          </p>
+                        </>
+                      ) : (
+                        <p className={classNames("text-xs leading-relaxed", theme.muted)}>
+                          全书模式：基于整本书内容回答，可以问跨章节的问题。首次提问会同步书稿，稍慢。
+                        </p>
+                      )}
+                    </div>
+                    {askMessages.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAskMessages([]);
+                          setBookSessionId(null);
+                        }}
+                        className={classNames("shrink-0 rounded-full border border-current/15 px-2.5 py-1 text-xs", theme.muted, theme.hover)}
+                      >
+                        清空对话
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {askMessages.length > 0 && (
+                  <div data-ask-thread className="space-y-2">
+                    {askMessages.map((message, index) => (
+                      <div
+                        key={index}
+                        className={classNames("flex", message.role === "user" ? "justify-end" : "justify-start")}
+                      >
+                        {message.role === "user" ? (
+                          <p className="max-w-[85%] rounded-[16px] rounded-br-[4px] bg-[#1f8a70] px-3.5 py-2.5 text-sm leading-relaxed text-white">
+                            {message.content}
+                          </p>
+                        ) : (
+                          <div className={classNames("max-w-[92%] rounded-[16px] rounded-bl-[4px] border px-3.5 py-2.5", theme.card)}>
+                            <p className={classNames("whitespace-pre-wrap text-[15px] leading-relaxed", theme.text)}>
+                              {message.content || "…"}
+                            </p>
+                            {!asking && index === askMessages.length - 1 && message.content && (
+                              <button
+                                type="button"
+                                onClick={saveAnswerAsNote}
+                                className="mt-2 rounded-full bg-[#1f8a70] px-3 py-1 text-xs font-semibold text-white"
+                              >
+                                保存为笔记
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <label className={classNames("block rounded-[16px] border p-3", theme.card)}>
                   <span className="sr-only">输入问题</span>
                   <input
@@ -1446,7 +1483,7 @@ export default function BookCompanion() {
                       if (event.key === "Enter") void askCompanion("解释");
                     }}
                     className="w-full bg-transparent text-sm font-medium outline-none placeholder:text-current/35"
-                    placeholder="问当前段落..."
+                    placeholder={askMessages.length ? "继续追问..." : "问当前段落..."}
                   />
                 </label>
                 <div className="grid grid-cols-4 gap-2">
@@ -1474,23 +1511,6 @@ export default function BookCompanion() {
                     {asking ? "..." : "发送"}
                   </button>
                 </div>
-                {companionAnswer && (
-                  <div className={classNames("rounded-[16px] border p-4", theme.card)}>
-                    <div className="mb-2 flex items-center justify-between gap-3">
-                      <p className={classNames("text-sm font-semibold", theme.text)}>书伴回答</p>
-                      <button
-                        type="button"
-                        onClick={saveAnswerAsNote}
-                        className="rounded-full bg-[#1f8a70] px-3 py-1.5 text-xs font-semibold text-white"
-                      >
-                        保存
-                      </button>
-                    </div>
-                    <p className={classNames("whitespace-pre-wrap text-[15px] leading-relaxed", theme.text)}>
-                      {companionAnswer}
-                    </p>
-                  </div>
-                )}
               </div>
             )}
 
