@@ -56,3 +56,21 @@ describe("searchReadBlocks", () => {
     expect(searchReadBlocks(BLOCKS, "nope", "田蚡", 5)).toHaveLength(0);
   });
 });
+
+describe("searchReadBlocks — whole-book mode (activeId = null)", () => {
+  it("searches the ENTIRE book including later chapters", () => {
+    const hits = searchReadBlocks(BLOCKS, null, "战事爆发", 5);
+    expect(hits.map((h) => h.text).join("")).toContain("战事爆发");
+  });
+
+  it("finds 4+ character phrases (the ngram-limit case)", () => {
+    const hits = searchReadBlocks(BLOCKS, null, "马厩翻建工程", 5);
+    expect(hits.map((h) => h.text).join("")).toContain("马厩翻建工程");
+  });
+
+  it("still ranks relevant blocks first", () => {
+    const hits = searchReadBlocks(BLOCKS, null, "田蚡", 3);
+    expect(hits.length).toBeGreaterThan(0);
+    for (const h of hits) expect(h.text).toContain("田蚡");
+  });
+});

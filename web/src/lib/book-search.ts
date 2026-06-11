@@ -12,24 +12,31 @@ function grams(text: string): string[] {
 }
 
 /**
- * Spoiler-safe retrieval: BM25-flavoured bigram search over the blocks the
- * reader has ALREADY read (strictly before the active block).
+ * BM25-flavoured bigram search over book blocks.
+ *
+ * With an `activeId` the search is spoiler-safe: only blocks strictly BEFORE
+ * the active one are searched. With `activeId = null` the ENTIRE book is
+ * searched (whole-book Q&A mode).
  */
 export function searchReadBlocks(
   blocks: BookBlock[],
-  activeId: string,
+  activeId: string | null,
   query: string,
   topK = 5,
 ): SearchHit[] {
-  const activeIndex = blocks.findIndex((b) => b.id === activeId);
-  if (activeIndex <= 0) return [];
+  let scope: BookBlock[];
+  if (activeId === null) {
+    scope = blocks;
+  } else {
+    const activeIndex = blocks.findIndex((b) => b.id === activeId);
+    if (activeIndex <= 0) return [];
+    scope = blocks.slice(0, activeIndex);
+  }
 
   const queryGrams = new Set(grams(query));
   if (!queryGrams.size) return [];
 
-  const read = blocks
-    .slice(0, activeIndex)
-    .filter((b) => b.kind !== "rule" && b.text.trim());
+  const read = scope.filter((b) => b.kind !== "rule" && b.text.trim());
 
   // document frequency for IDF weighting
   const df = new Map<string, number>();

@@ -6,7 +6,7 @@ import {
   firstSelectableId,
   parseBookText,
 } from "@/lib/book-parser";
-import { buildAskContext } from "@/lib/ask-context";
+import { buildAskContext, buildRecapContext } from "@/lib/ask-context";
 import { searchReadBlocks } from "@/lib/book-search";
 import { parseReaderState, serializeReaderState } from "@/lib/reader-state";
 import { VoicePlayer } from "@/lib/voicePlayer";
@@ -20,7 +20,7 @@ type DialoguePartner = {
 
 type Panel = "toc" | "listen" | "ask" | "dialogue" | "notes" | "settings";
 type AskMessage = { role: "user" | "assistant"; content: string };
-type CompanionMode = "解释" | "举例" | "质疑";
+type CompanionMode = "解释" | "举例" | "质疑" | "回顾";
 type ReaderThemeId = "paper" | "white" | "night";
 type ReaderLayout = "mobile" | "desktop";
 
@@ -277,8 +277,6 @@ export default function BookCompanion() {
   const [question, setQuestion] = useState("");
   const [askMessages, setAskMessages] = useState<AskMessage[]>([]);
   const [askScope, setAskScope] = useState<"passage" | "book">("passage");
-  const [bookSessionId, setBookSessionId] = useState<string | null>(null);
-  const [bookSynced, setBookSynced] = useState(false);
   // Native text selection (long-press / drag) inside the reader. Takes
   // precedence over block-level selection as the 问书 target.
   const [nativeSelection, setNativeSelection] = useState<{ text: string; anchorId: string } | null>(
@@ -930,8 +928,6 @@ export default function BookCompanion() {
     setSelectionToolsOpen(false);
     stopListening();
     setAskMessages([]);
-    setBookSessionId(null);
-    setBookSynced(false);
     setDialogueTranscript("");
     setError("");
   }
@@ -968,8 +964,6 @@ export default function BookCompanion() {
     setSelectionToolsOpen(false);
     stopListening();
     setAskMessages([]);
-    setBookSessionId(null);
-    setBookSynced(false);
     setDialogueTranscript("");
   }
 
@@ -1005,57 +999,38 @@ export default function BookCompanion() {
     ]);
 
     try {
-      if (askScope === "book") {
-        // Whole-book mode: Open Notebook gateway (multi-turn via its session)
-        const raw = window.localStorage.getItem("book-companion:jiyuan:text") || "";
-        const response = await fetch("/api/book/ask-book", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            question: cleanQuestion,
-            sessionId: bookSessionId ?? undefined,
-            syncText: bookSynced ? undefined : raw,
-          }),
-        });
-        const data = (await response.json().catch(() => ({}))) as {
-          answer?: string;
-          sessionId?: string;
-          error?: string;
-        };
-        if (!response.ok) throw new Error(data.error || "全书问答失败");
-        if (data.sessionId) setBookSessionId(data.sessionId);
-        setBookSynced(true);
-        const answer = data.answer?.trim() || "";
-        if (!answer) throw new Error("全书问答为空，请重试");
-        setAskMessages((current) => {
-          const next = [...current];
-          next[next.length - 1] = { role: "assistant", content: answer };
-          return next;
-        });
-        return;
-      }
-
       // Native text selection wins; otherwise the active block.
       const anchorId = nativeSelection?.anchorId ?? activePassage.id;
-      const context = buildAskContext(passages, anchorId);
+      const isRecap = mode === "回顾";
+      const context = isRecap
+        ? { passage: activePassage.text, before: buildRecapContext(passages, anchorId) }
+        : buildAskContext(passages, anchorId);
       const passageText = nativeSelection?.text || context.passage || activePassage.text;
-      // Spoiler-safe RAG: retrieve relevant excerpts from already-read blocks
-      // so questions about earlier chapters get grounded answers.
-      const retrieved = searchReadBlocks(passages, anchorId, cleanQuestion, 5)
-        .map((hit) => hit.text)
-        .filter((text) => !context.before.includes(text) && text !== passageText);
+      // RAG over the book: spoiler-safe (already-read only) in passage mode,
+      // the whole book in book mode. Local bigram retrieval — no extra server.
+      const retrieved = isRecap
+        ? []
+        : searchReadBlocks(
+            passages,
+            askScope === "book" ? null : anchorId,
+            cleanQuestion,
+            askScope === "book" ? 10 : 5,
+          )
+            .map((hit) => hit.text)
+            .filter((text) => !context.before.includes(text) && text !== passageText);
       const response = await fetch("/api/book/companion", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chapterTitle: readingTitle,
-          passage: passageText,
-          before: context.before,
+          passage: askScope === "book" && !isRecap ? "" : passageText,
+          before: askScope === "book" && !isRecap ? [] : context.before,
           retrieved,
           question: cleanQuestion,
           mode,
           notes,
           history,
+          scope: askScope,
         }),
       });
       if (!response.ok || !response.body) {
@@ -1909,17 +1884,14 @@ export default function BookCompanion() {
                         </>
                       ) : (
                         <p className={classNames("text-xs leading-relaxed", theme.muted)}>
-                          全书模式：基于整本书内容回答，可以问跨章节的问题。首次提问会同步书稿，稍慢。
+                          全书模式：检索整本书后回答，可以问跨章节的问题（不防剧透）。
                         </p>
                       )}
                     </div>
                     {askMessages.length > 0 && (
                       <button
                         type="button"
-                        onClick={() => {
-                          setAskMessages([]);
-                          setBookSessionId(null);
-                        }}
+                        onClick={() => setAskMessages([])}
                         className={classNames("shrink-0 rounded-full border border-current/15 px-2.5 py-1 text-xs", theme.muted, theme.hover)}
                       >
                         清空对话
@@ -1973,6 +1945,16 @@ export default function BookCompanion() {
                   />
                 </label>
                 <div className="grid grid-cols-4 gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void askCompanion("回顾", "前情提要：请严格按时间顺序回顾——开篇发生了什么、中间有哪些关键事件、我现在读到哪了。点出主要人物的名字，只依据提供的已读内容。")
+                    }
+                    disabled={asking}
+                    className={classNames("h-11 rounded-[14px] border text-sm font-semibold disabled:opacity-60", theme.card)}
+                  >
+                    前情提要
+                  </button>
                   {[
                     ["解释", "解释一下"],
                     ["举例", "举个例子"],
@@ -1992,7 +1974,7 @@ export default function BookCompanion() {
                     type="button"
                     onClick={() => void askCompanion("解释")}
                     disabled={asking}
-                    className="h-11 rounded-[14px] bg-[#1f8a70] text-sm font-semibold text-white disabled:opacity-60"
+                    className="col-span-4 h-11 rounded-[14px] bg-[#1f8a70] text-sm font-semibold text-white disabled:opacity-60"
                   >
                     {asking ? "..." : "发送"}
                   </button>

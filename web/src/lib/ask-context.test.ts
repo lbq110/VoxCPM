@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BookBlock } from "./book-parser";
-import { buildAskContext } from "./ask-context";
+import { buildAskContext, buildRecapContext } from "./ask-context";
 
 function block(id: string, text: string, kind: BookBlock["kind"] = "paragraph"): BookBlock {
   return { id, text, kind };
@@ -68,5 +68,65 @@ describe("buildAskContext", () => {
     const ctx = buildAskContext(BLOCKS, "nope");
     expect(ctx.passage).toBe("");
     expect(ctx.before).toEqual([]);
+  });
+});
+
+describe("buildRecapContext", () => {
+  const MANY: BookBlock[] = Array.from({ length: 60 }, (_, i) => ({
+    id: `b${i}`,
+    text: `第${i}段：这一段大约有三十个字的剧情内容用来撑起篇幅测试。`,
+    kind: "paragraph" as const,
+  }));
+
+  it("includes the opening blocks (story setup)", () => {
+    const recap = buildRecapContext(MANY, "b50");
+    expect(recap.some((t) => t.includes("第0段"))).toBe(true);
+  });
+
+  it("includes the most recent blocks before the reading position", () => {
+    const recap = buildRecapContext(MANY, "b50");
+    expect(recap.some((t) => t.includes("第49段"))).toBe(true);
+  });
+
+  it("samples the middle so the whole arc is covered", () => {
+    const recap = buildRecapContext(MANY, "b50");
+    const hasMiddle = recap.some((t) => {
+      const m = t.match(/第(\d+)段/);
+      const n = m ? Number(m[1]) : -1;
+      return n >= 10 && n <= 40;
+    });
+    expect(hasMiddle).toBe(true);
+  });
+
+  it("NEVER includes blocks at or after the reading position", () => {
+    const recap = buildRecapContext(MANY, "b50");
+    for (const t of recap) {
+      const m = t.match(/第(\d+)段/);
+      expect(Number(m![1])).toBeLessThan(50);
+    }
+  });
+
+  it("keeps texts in reading order without duplicates", () => {
+    const recap = buildRecapContext(MANY, "b50");
+    const nums = recap.map((t) => Number(t.match(/第(\d+)段/)![1]));
+    expect(new Set(nums).size).toBe(nums.length);
+    expect([...nums].sort((a, b) => a - b)).toEqual(nums);
+  });
+
+  it("respects the character budget", () => {
+    const recap = buildRecapContext(MANY, "b50", 300);
+    expect(recap.join("").length).toBeLessThanOrEqual(300);
+  });
+
+  it("handles a short read history without duplication", () => {
+    const recap = buildRecapContext(MANY, "b5");
+    const nums = recap.map((t) => Number(t.match(/第(\d+)段/)![1]));
+    expect(new Set(nums).size).toBe(nums.length);
+    expect(Math.max(...nums)).toBeLessThan(5);
+  });
+
+  it("returns empty when nothing has been read", () => {
+    expect(buildRecapContext(MANY, "b0")).toEqual([]);
+    expect(buildRecapContext(MANY, "nope")).toEqual([]);
   });
 });
