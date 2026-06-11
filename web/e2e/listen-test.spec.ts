@@ -117,3 +117,51 @@ test("listen: auto page-turn follows narration across pages", async ({ page }) =
   console.log(`[listen] narration reached page ${maxPage}`);
   expect(maxPage).toBeGreaterThan(1);
 });
+
+test("listen: chapter headings narrate with pauses, chain не breaks", async ({ page }) => {
+  test.setTimeout(90_000);
+
+  const pcm = Buffer.alloc(Math.floor(24000 * 0.25) * 2);
+  const synthesized: string[] = [];
+  await page.route("**/api/tts", (route) => {
+    const body = route.request().postDataJSON() as { text?: string };
+    synthesized.push(body.text ?? "");
+    return route.fulfill({
+      status: 200,
+      headers: { "Content-Type": "application/octet-stream", "X-Sample-Rate": "24000" },
+      body: pcm,
+    });
+  });
+
+  const TEXT = ["上一章的最后一句话。", "2", "新章节的第一句话。", "新章节的第二句话。"].join("\n");
+  await page.goto("http://localhost:3001/book", { waitUntil: "domcontentloaded" });
+  await page.evaluate((t) => {
+    localStorage.clear();
+    localStorage.setItem("book-companion:jiyuan:text", t);
+  }, TEXT);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(2000);
+
+  await page.locator("button:visible", { hasText: "目录" }).first().click();
+  await page.waitForTimeout(400);
+  await page.locator("button:visible", { hasText: "听书" }).first().click();
+  await page.waitForTimeout(300);
+  await page.locator("button:visible", { hasText: "连续听书" }).click();
+
+  const seen: string[] = [];
+  for (let i = 0; i < 400; i++) {
+    const probe = await page.evaluate(() => ({
+      speaking: document.querySelector(".speaking-block")?.textContent?.slice(0, 8) ?? "",
+      phase: document.querySelector("[data-listen-phase]")?.getAttribute("data-listen-phase"),
+    }));
+    if (probe.speaking && seen[seen.length - 1] !== probe.speaking) seen.push(probe.speaking);
+    if (probe.phase === "idle" && seen.length) break;
+    await page.waitForTimeout(40);
+  }
+  console.log(`[chapter-pause] highlight sequence: ${seen.join(" -> ")}`);
+  console.log(`[chapter-pause] synthesized: ${synthesized.map((t) => t.slice(0, 8)).join(" | ")}`);
+  expect(seen).toContain("2");
+  // every block was synthesized, including the last one after the chapter
+  expect(synthesized.some((t) => t.includes("新章节的第二句话"))).toBe(true);
+  expect(synthesized.length).toBe(4);
+});

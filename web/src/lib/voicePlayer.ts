@@ -10,7 +10,7 @@ type Phase = "idle" | "synthesizing" | "speaking";
 export class VoicePlayer {
   private ctx: AudioContext | null = null;
   private nextTime = 0;
-  private queue: { text: string; tag?: unknown }[] = [];
+  private queue: ({ text: string; tag?: unknown } | { silence: number })[] = [];
   private draining = false;
   private generation = 0; // bumped on stop() to cancel in-flight work
   private activeSources = new Set<AudioBufferSourceNode>();
@@ -59,6 +59,13 @@ export class VoicePlayer {
     void this.drain();
   }
 
+  /** Queue a silent gap before the next utterance (e.g. chapter breaks). */
+  speakSilence(seconds: number) {
+    if (seconds <= 0) return;
+    this.queue.push({ silence: seconds });
+    void this.drain();
+  }
+
   /** Pause playback (audio clock freezes; scheduled buffers resume later). */
   pause() {
     if (this.ctx && this.ctx.state === "running") void this.ctx.suspend();
@@ -100,6 +107,12 @@ export class VoicePlayer {
 
     while (this.queue.length && gen === this.generation) {
       const item = this.queue.shift()!;
+      if ("silence" in item) {
+        // push the next utterance's start time out — costs nothing to render
+        const ctx = this.ensureCtx();
+        this.nextTime = Math.max(this.nextTime, ctx.currentTime) + item.silence;
+        continue;
+      }
       try {
         if (!this.activeSources.size) this.onPhase?.("synthesizing");
         await this.synthAndSchedule(item.text, gen, item.tag);

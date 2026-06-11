@@ -649,33 +649,34 @@ export default function BookCompanion() {
     if (phase === "idle") {
       // spurious idle can fire while suspended; a real one follows on resume
       if (l.paused) return;
-      if (l.enqueued < l.ids.length) {
-        // synthesis gap (or timer race): feed the next block and keep going
-        const id = l.ids[l.enqueued];
-        const block = passages.find((b) => b.id === id);
-        if (block && l.player) {
-          l.player.speak(block.text, id);
-          l.enqueued += 1;
-          return;
-        }
-      }
+      // synthesis gap (or timer race): feed the next block and keep going
+      if (enqueueNextListenBlock()) return;
       stopListening(); // playback queue fully finished
     } else {
       setListenPhase(phase);
     }
   }
 
+  /** Enqueue the next pending block, with breathing room around chapters. */
+  function enqueueNextListenBlock(): boolean {
+    const l = listenRef.current;
+    if (!l.active || !l.player || l.enqueued >= l.ids.length) return false;
+    const id = l.ids[l.enqueued];
+    const block = passages.find((b) => b.id === id);
+    if (!block) return false;
+    if (block.kind === "heading") l.player.speakSilence(1.2);
+    l.player.speak(block.text, id);
+    if (block.kind === "heading") l.player.speakSilence(0.8);
+    l.enqueued += 1;
+    return true;
+  }
+
   /** Keep one block synthesizing ahead of the one currently playing. */
   function enqueueListenLookahead() {
     const l = listenRef.current;
-    if (!l.active || !l.player) return;
     const target = Math.min(l.ids.length, Math.max(l.pos, 0) + 2);
     while (l.enqueued < target) {
-      const id = l.ids[l.enqueued];
-      const block = passages.find((b) => b.id === id);
-      if (!block) break;
-      l.player.speak(block.text, id);
-      l.enqueued += 1;
+      if (!enqueueNextListenBlock()) break;
     }
   }
 
