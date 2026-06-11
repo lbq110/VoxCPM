@@ -282,16 +282,16 @@ export default function BookCompanion() {
   // element's transform directly — going through React state would reconcile
   // the entire book on every touchmove and freeze large books.
   const swipeRef = useRef<{ startX: number; startY: number; active: boolean; dx: number } | null>(null);
-  // Listening (read-aloud) engine state.
+  // Listening (read-aloud) engine state. Blocks are pipelined: while one
+  // block plays, the next is already synthesizing (RTF≈1 makes this seamless).
   const listenRef = useRef<{
     player: VoicePlayer | null;
     ids: string[];
     pos: number;
+    enqueued: number;
     active: boolean;
     paused: boolean;
-    pendingAdvance: boolean;
-    single: boolean;
-  }>({ player: null, ids: [], pos: -1, active: false, paused: false, pendingAdvance: false, single: false });
+  }>({ player: null, ids: [], pos: -1, enqueued: 0, active: false, paused: false });
   const [listenPhase, setListenPhase] = useState<"idle" | "synthesizing" | "speaking" | "paused">("idle");
   const [speakingBlockId, setSpeakingBlockId] = useState<string | null>(null);
   const [dialogueTranscript, setDialogueTranscript] = useState("");
@@ -426,11 +426,14 @@ export default function BookCompanion() {
     );
   }, [selectedPassage, fontSize, lineHeight, themeId, notes, highlightedIds, askMessages]);
 
-  // Rebind the listening phase handler every render so it always sees the
+  // Rebind the listening handlers every render so they always see the
   // latest closures (passages, page state). Stop playback on unmount.
   useEffect(() => {
     const player = listenRef.current.player;
-    if (player) player.onPhase = listenPhaseHandler;
+    if (player) {
+      player.onPhase = listenPhaseHandler;
+      player.onUtteranceStart = handleUtteranceStart;
+    }
   });
   useEffect(() => {
     const l = listenRef.current;
@@ -610,15 +613,51 @@ export default function BookCompanion() {
       return;
     }
     if (phase === "idle") {
-      // current block finished playing
-      if (l.paused) {
-        l.pendingAdvance = true;
-        return;
+      // spurious idle can fire while suspended; a real one follows on resume
+      if (l.paused) return;
+      if (l.enqueued < l.ids.length) {
+        // synthesis gap (or timer race): feed the next block and keep going
+        const id = l.ids[l.enqueued];
+        const block = passages.find((b) => b.id === id);
+        if (block && l.player) {
+          l.player.speak(block.text, id);
+          l.enqueued += 1;
+          return;
+        }
       }
-      advanceListening();
+      stopListening(); // playback queue fully finished
     } else {
       setListenPhase(phase);
     }
+  }
+
+  /** Keep one block synthesizing ahead of the one currently playing. */
+  function enqueueListenLookahead() {
+    const l = listenRef.current;
+    if (!l.active || !l.player) return;
+    const target = Math.min(l.ids.length, Math.max(l.pos, 0) + 2);
+    while (l.enqueued < target) {
+      const id = l.ids[l.enqueued];
+      const block = passages.find((b) => b.id === id);
+      if (!block) break;
+      l.player.speak(block.text, id);
+      l.enqueued += 1;
+    }
+  }
+
+  function handleUtteranceStart(tag: unknown) {
+    const l = listenRef.current;
+    if (!l.active || typeof tag !== "string") return;
+    const pos = l.ids.indexOf(tag);
+    if (pos < 0) return;
+    l.pos = pos;
+    setSpeakingBlockId(tag);
+    setSpeakingHighlight(tag);
+    // follow the narration without goToPage's side effects (it closes the
+    // drawer, which holds the playback controls)
+    setPageIndex(pageIndexForBlockId(tag));
+    setSelectedPassage(tag);
+    enqueueListenLookahead();
   }
 
   function ensurePlayer(): VoicePlayer {
@@ -626,37 +665,9 @@ export default function BookCompanion() {
     if (!l.player) {
       l.player = new VoicePlayer();
       l.player.onPhase = listenPhaseHandler;
+      l.player.onUtteranceStart = handleUtteranceStart;
     }
     return l.player;
-  }
-
-  function speakBlockAt(pos: number) {
-    const l = listenRef.current;
-    const id = l.ids[pos];
-    const block = passages.find((b) => b.id === id);
-    if (!block || !l.player) {
-      stopListening();
-      return;
-    }
-    l.pos = pos;
-    setSpeakingBlockId(id);
-    setSpeakingHighlight(id);
-    // follow the narration without goToPage's side effects (it closes the
-    // drawer, which holds the playback controls)
-    setPageIndex(pageIndexForBlockId(id));
-    setSelectedPassage(id);
-    l.player.speak(block.text);
-  }
-
-  function advanceListening() {
-    const l = listenRef.current;
-    if (!l.active) return;
-    const next = l.pos + 1;
-    if (l.single || next >= l.ids.length) {
-      stopListening();
-      return;
-    }
-    speakBlockAt(next);
   }
 
   function startListening(single: boolean) {
@@ -665,16 +676,18 @@ export default function BookCompanion() {
     const startId = nativeSelection?.anchorId ?? activePassage.id;
     const readable = passages.filter((b) => b.kind !== "rule" && b.text.trim());
     const startIndex = Math.max(0, readable.findIndex((b) => b.id === startId));
-    l.ids = readable.slice(startIndex).map((b) => b.id);
+    l.ids = single
+      ? readable.slice(startIndex, startIndex + 1).map((b) => b.id)
+      : readable.slice(startIndex).map((b) => b.id);
     if (!l.ids.length) return;
+    l.pos = -1;
+    l.enqueued = 0;
     l.active = true;
     l.paused = false;
-    l.pendingAdvance = false;
-    l.single = single;
     const player = ensurePlayer();
     player.prime(); // must run inside the user gesture
     setListenPhase("synthesizing");
-    speakBlockAt(0);
+    enqueueListenLookahead();
   }
 
   function pauseListening() {
@@ -691,19 +704,15 @@ export default function BookCompanion() {
     l.paused = false;
     l.player?.resume();
     setListenPhase("speaking");
-    if (l.pendingAdvance) {
-      l.pendingAdvance = false;
-      advanceListening();
-    }
   }
 
   function stopListening() {
     const l = listenRef.current;
     l.active = false;
     l.paused = false;
-    l.pendingAdvance = false;
     l.ids = [];
     l.pos = -1;
+    l.enqueued = 0;
     l.player?.stop();
     setSpeakingBlockId(null);
     setSpeakingHighlight(null);

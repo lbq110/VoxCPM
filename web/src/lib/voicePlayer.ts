@@ -10,7 +10,7 @@ type Phase = "idle" | "synthesizing" | "speaking";
 export class VoicePlayer {
   private ctx: AudioContext | null = null;
   private nextTime = 0;
-  private queue: string[] = [];
+  private queue: { text: string; tag?: unknown }[] = [];
   private draining = false;
   private generation = 0; // bumped on stop() to cancel in-flight work
   private activeSources = new Set<AudioBufferSourceNode>();
@@ -19,6 +19,8 @@ export class VoicePlayer {
   private waitingForFirstAudio = false;
   onPhase?: (phase: Phase) => void;
   onFirstAudio?: () => void;
+  /** Fires when an utterance's audio actually STARTS playing (by tag). */
+  onUtteranceStart?: (tag: unknown) => void;
 
   constructor(ttsOptions: Record<string, unknown> = {}) {
     this.ttsOptions = ttsOptions;
@@ -49,10 +51,10 @@ export class VoicePlayer {
   }
 
   /** Queue a finished sentence/segment for synthesis + playback. */
-  speak(text: string) {
+  speak(text: string, tag?: unknown) {
     const t = text.trim();
     if (!t) return;
-    this.queue.push(t);
+    this.queue.push({ text: t, tag });
     this.waitingForFirstAudio = true;
     void this.drain();
   }
@@ -97,10 +99,10 @@ export class VoicePlayer {
     if (!this.activeSources.size) this.onPhase?.("synthesizing");
 
     while (this.queue.length && gen === this.generation) {
-      const sentence = this.queue.shift()!;
+      const item = this.queue.shift()!;
       try {
         if (!this.activeSources.size) this.onPhase?.("synthesizing");
-        await this.synthAndSchedule(sentence, gen);
+        await this.synthAndSchedule(item.text, gen, item.tag);
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         console.error("tts error", err);
@@ -124,9 +126,18 @@ export class VoicePlayer {
     }
   }
 
-  private async synthAndSchedule(text: string, gen: number) {
+  private async synthAndSchedule(text: string, gen: number, tag?: unknown) {
     const controller = new AbortController();
     this.activeFetches.add(controller);
+    let announcedStart = false;
+    const announceStartAt = (startAt: number, ctx: AudioContext) => {
+      if (announcedStart || tag === undefined) return;
+      announcedStart = true;
+      const delay = Math.max(0, (startAt - ctx.currentTime) * 1000);
+      window.setTimeout(() => {
+        if (gen === this.generation) this.onUtteranceStart?.(tag);
+      }, delay);
+    };
     try {
       const res = await fetch("/api/tts", {
         method: "POST",
@@ -170,7 +181,8 @@ export class VoicePlayer {
         } else {
           startedPlayback = true;
         }
-        this.schedulePcm(ctx, pcm, sampleRate, gen);
+        const startAt = this.schedulePcm(ctx, pcm, sampleRate, gen);
+        announceStartAt(startAt, ctx);
       };
 
       while (true) {
@@ -216,7 +228,7 @@ export class VoicePlayer {
     bytes: Uint8Array<ArrayBufferLike>,
     sampleRate: number,
     gen: number,
-  ) {
+  ): number {
     const sampleCount = bytes.length / 2;
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const buffer = ctx.createBuffer(1, sampleCount, sampleRate);
@@ -246,6 +258,7 @@ export class VoicePlayer {
         this.onPhase?.("idle");
       }
     };
+    return startAt;
   }
 }
 
