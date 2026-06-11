@@ -307,6 +307,7 @@ export default function BookCompanion() {
   const [listenVoice, setListenVoice] = useState<string | null>(null);
   const [voiceUploading, setVoiceUploading] = useState(false);
   const [voiceUploadMsg, setVoiceUploadMsg] = useState("");
+  const [voiceManaging, setVoiceManaging] = useState(false);
   const [dialogueTranscript, setDialogueTranscript] = useState("");
   const [notes, setNotes] = useState(initialNotes);
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
@@ -458,6 +459,50 @@ export default function BookCompanion() {
     void refreshVoices().catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function renameVoice(id: string, currentLabel: string) {
+    const label = window.prompt("新的音色名字：", currentLabel)?.trim();
+    if (!label || label === currentLabel) return;
+    try {
+      const res = await fetch("/api/voices/manage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "rename", id, label }),
+      });
+      if (!res.ok) throw new Error("重命名失败");
+      await refreshVoices();
+      setVoiceUploadMsg(`已重命名为：${label}`);
+    } catch (err) {
+      setVoiceUploadMsg(err instanceof Error ? err.message : "重命名失败");
+    }
+  }
+
+  async function deleteVoice(id: string, label: string) {
+    if (!window.confirm(`删除音色「${label}」？`)) return;
+    try {
+      const res = await fetch("/api/voices/manage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", id }),
+      });
+      if (!res.ok) throw new Error("删除失败");
+      if (listenVoice === id) {
+        stopListening();
+        setListenVoice(null); // refreshVoices falls back to the first voice
+      }
+      await refreshVoices();
+      setVoiceUploadMsg(`已删除：${label}`);
+    } catch (err) {
+      setVoiceUploadMsg(err instanceof Error ? err.message : "删除失败");
+    }
+  }
+
+  /** Bottom-bar one-tap narration: play / pause / resume. */
+  function toggleListenFromBar() {
+    if (listenPhase === "idle") startListening(false);
+    else if (listenPhase === "paused") resumeListening();
+    else pauseListening();
+  }
 
   /** Upload a recording, extract its voice on the server, select it. */
   async function handleVoiceUpload(file: File | undefined) {
@@ -1468,17 +1513,23 @@ export default function BookCompanion() {
           )}
         >
           <div className="mx-auto max-w-[430px]">
-            <div className="grid grid-cols-5 gap-2">
+            <div className="grid grid-cols-6 gap-1.5">
               {[
                 ["☰", "目录", () => openDrawer("toc", "mobile")],
                 ["A-", "缩小", () => setFontSize((value) => Math.max(16, value - 1))],
                 ["A+", "放大", () => setFontSize((value) => Math.min(26, value + 1))],
+                [
+                  listenPhase === "idle" || listenPhase === "paused" ? "▶" : "⏸",
+                  listenPhase === "idle" ? "朗读" : listenPhase === "paused" ? "继续" : "暂停",
+                  toggleListenFromBar,
+                ],
                 ["☼", "背景", cycleTheme],
                 ["✦", "问书", () => openDrawer("ask", "mobile")],
-              ].map(([icon, label, action]) => (
+              ].map(([icon, label, action], index) => (
                 <button
-                  key={label as string}
+                  key={index}
                   type="button"
+                  data-bar-action={label as string}
                   onClick={action as () => void}
                   className={classNames("rounded-[14px] py-2", theme.hover)}
                 >
@@ -1593,26 +1644,66 @@ export default function BookCompanion() {
                   </p>
                 </div>
                 <div>
-                  <p className={classNames("mb-2 text-xs font-semibold uppercase tracking-[0.12em]", theme.muted)}>
-                    朗读音色
-                  </p>
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className={classNames("text-xs font-semibold uppercase tracking-[0.12em]", theme.muted)}>
+                      朗读音色
+                    </p>
+                    {voices.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setVoiceManaging((v) => !v)}
+                        className={classNames(
+                          "rounded-full border border-current/15 px-2.5 py-1 text-xs",
+                          theme.muted,
+                          theme.hover,
+                          voiceManaging && "border-[#1f8a70] text-[#1f8a70]",
+                        )}
+                      >
+                        {voiceManaging ? "完成" : "管理"}
+                      </button>
+                    )}
+                  </div>
                   <div className="flex flex-wrap gap-2">
                     {voices.map((v) => (
-                      <button
+                      <span
                         key={v.id}
-                        type="button"
-                        onClick={() => {
-                          if (listenPhase !== "idle") stopListening();
-                          setListenVoice(v.id);
-                        }}
                         className={classNames(
-                          "rounded-full border px-3.5 py-2 text-sm font-medium",
+                          "inline-flex items-center overflow-hidden rounded-full border text-sm font-medium",
                           theme.card,
                           listenVoice === v.id && "border-[#1f8a70] shadow-[0_0_0_2px_rgba(31,138,112,0.16)]",
                         )}
                       >
-                        {v.label}
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (listenPhase !== "idle") stopListening();
+                            setListenVoice(v.id);
+                          }}
+                          className={classNames("px-3.5 py-2", theme.hover)}
+                        >
+                          {v.label}
+                        </button>
+                        {voiceManaging && (
+                          <>
+                            <button
+                              type="button"
+                              aria-label={`重命名 ${v.label}`}
+                              onClick={() => void renameVoice(v.id, v.label)}
+                              className={classNames("border-l border-current/10 px-2.5 py-2 text-xs", theme.muted, theme.hover)}
+                            >
+                              ✎
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`删除 ${v.label}`}
+                              onClick={() => void deleteVoice(v.id, v.label)}
+                              className={classNames("border-l border-current/10 px-2.5 py-2 text-xs text-[#c4543f]", theme.hover)}
+                            >
+                              ×
+                            </button>
+                          </>
+                        )}
+                      </span>
                     ))}
                     <label
                       className={classNames(
