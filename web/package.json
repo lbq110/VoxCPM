@@ -7,7 +7,12 @@
     "build": "next build",
     "typecheck": "tsc --noEmit",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "observe": "npx playwright test e2e/observe.spec.ts --grep \"page state|layout\"",
+    "observe:scan": "npx playwright test e2e/observe.spec.ts --grep scan",
+    "e2e": "npx playwright test"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.195",
@@ -19,6 +24,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -26,6 +32,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.6"
   }
 }
