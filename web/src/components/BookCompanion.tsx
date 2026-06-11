@@ -378,13 +378,6 @@ export default function BookCompanion() {
     [passages, highlightedIds, themeId, fontSize, lineHeight, readingTitle],
   );
 
-  const dialogueContext = useMemo(() => {
-    const readable = passages.filter((item) => item.kind !== "rule" && item.text.trim());
-    const activeIndex = readable.findIndex((item) => item.id === activePassage.id);
-    const start = activeIndex >= 0 ? Math.max(0, activeIndex - 4) : 0;
-    return readable.slice(start, start + 12).map((item) => item.text);
-  }, [activePassage.id, passages]);
-
   useEffect(() => {
     window.scrollTo({ left: 0, top: 0 });
     const id = window.setTimeout(() => {
@@ -1075,13 +1068,18 @@ export default function BookCompanion() {
     setDialogueTranscript("");
 
     try {
+      // Spoiler-safe context: story-so-far recap + prose just before the
+      // reading position. Nothing after the reader's current page.
+      const anchorId = nativeSelection?.anchorId ?? activePassage.id;
+      const context = buildAskContext(passages, anchorId, 1600);
       const response = await fetch("/api/book/dialogue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          chapterTitle,
-          passages: dialogueContext,
-          selectedPassage: activePassage.text,
+          chapterTitle: readingTitle,
+          recap: buildRecapContext(passages, anchorId, 2000),
+          nearby: [...context.before, context.passage].filter(Boolean),
+          selectedPassage: nativeSelection?.text ?? activePassage.text,
           authorView,
           partner: selectedPartner,
           length,
@@ -1089,12 +1087,20 @@ export default function BookCompanion() {
           notes,
         }),
       });
-      const data = (await response.json().catch(() => ({}))) as {
-        transcript?: string;
-        error?: string;
-      };
-      if (!response.ok) throw new Error(data.error || "对谈生成失败");
-      setDialogueTranscript(data.transcript?.trim() || "");
+      if (!response.ok || !response.body) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "对谈生成失败");
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let transcript = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        transcript += decoder.decode(value, { stream: true });
+        setDialogueTranscript(transcript);
+      }
+      if (!transcript.trim()) throw new Error("对谈为空，请重试");
     } catch (err) {
       setError(err instanceof Error ? err.message : "对谈生成失败");
     } finally {
@@ -2054,7 +2060,10 @@ export default function BookCompanion() {
                         存为笔记
                       </button>
                     </div>
-                    <div className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded-[12px] bg-current/5 p-3 text-[14px] leading-relaxed">
+                    <div
+                      data-dialogue-transcript
+                      className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded-[12px] bg-current/5 p-3 text-[14px] leading-relaxed"
+                    >
                       {dialogueTranscript}
                     </div>
                   </div>

@@ -1,12 +1,15 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { generateText } from "ai";
+import { streamText } from "ai";
 import { config } from "@/lib/config";
 
 export const maxDuration = 90;
 
 type DialogueRequest = {
   chapterTitle?: string;
-  passages?: string[];
+  /** Story-so-far context (spoiler-safe, curated by the client). */
+  recap?: string[];
+  /** Text near the reading position, in reading order. */
+  nearby?: string[];
   selectedPassage?: string;
   authorView?: string;
   partner?: {
@@ -35,9 +38,10 @@ export async function POST(req: Request) {
 
   const body = (await req.json()) as DialogueRequest;
   const chapterTitle = body.chapterTitle?.trim() || "当前章节";
-  const passages = (body.passages ?? []).map((item) => item.trim()).filter(Boolean);
+  const nearby = (body.nearby ?? []).map((t) => t.trim()).filter(Boolean);
+  const recap = (body.recap ?? []).map((t) => t.trim()).filter(Boolean);
 
-  if (!passages.length) {
+  if (!nearby.length && !recap.length) {
     return Response.json({ error: "Missing chapter passages" }, { status: 400 });
   }
 
@@ -50,33 +54,31 @@ export async function POST(req: Request) {
     .slice(0, 8);
 
   const openrouter = createOpenRouter({ apiKey: config.openRouterApiKey });
-  const result = await generateText({
+  const result = streamText({
     model: openrouter(config.chatModel),
     temperature: 0.72,
-    system:
-      "你是互动电子书“书伴”的章节对谈编剧。你要基于章节内容生成双人对谈稿。重要限制：不要声称真实作家或真实名人正在发言；所有角色都是“视角模拟”或“风格化对话者”。不要模仿任何真实人物的私人声音、口癖或未公开事实。重点是帮助读者理解章节。",
+    system: [
+      "你是互动电子书“书伴”的章节对谈编剧。基于读者已读的内容生成双人对谈稿。",
+      "重要限制：不要声称真实作家或真实名人正在发言；所有角色都是“视角模拟”或“风格化对话者”。不要模仿任何真实人物的私人声音、口癖或未公开事实。",
+      "【防剧透】只讨论提供的已读材料。即使你知道这本书的后续情节，也绝对不能提及或暗示。",
+      "【输出格式，必须严格遵守，将用于语音合成】",
+      `每行一句台词，格式为「说话人：台词」。说话人只有两个：「${partnerName}」和「研究者」。`,
+      "不要输出标题、提纲、舞台说明、markdown 标记，台词行之外不要有任何其他内容。",
+      "对谈 10-14 轮，每轮 1-3 句话，口语化、有张力：先聊读到的内容，再追问最刺人的地方，最后由对话者留一个给读者的问题。",
+    ].join("\n"),
     prompt: [
-      `章节标题：${chapterTitle}`,
-      `作者侧角色：${body.authorView || "王朔作品文本研究者，不代表作者本人，也不模拟真人发言"}`,
+      `章节：${chapterTitle}`,
+      `作者侧角色（研究者）：${body.authorView || "文本研究者，不代表作者本人"}`,
       `对话者：${partnerName}（${partnerRole}）。定位：${partnerEdge}。`,
-      `目标时长：${body.length || "10"} 分钟。当前先生成文字稿预览，不需要真的写满时长。`,
-      `深度：${depthLabel[body.depth || ""] || "尖锐"}`,
-      `章节材料：\n${passages.map((item, index) => `${index + 1}. ${item}`).join("\n")}`,
-      body.selectedPassage ? `当前高亮段落：${body.selectedPassage}` : "",
+      `深度：${depthLabel[body.depth || ""] || "尖锐"}；目标时长 ${body.length || "10"} 分钟的文字稿预览。`,
+      recap.length ? `读者已读的前情（按时间顺序）：\n${recap.map((t) => `- ${t}`).join("\n")}` : "",
+      nearby.length ? `读者当前位置附近的内容：\n${nearby.join("\n")}` : "",
+      body.selectedPassage ? `读者高亮的段落：${body.selectedPassage}` : "",
       notes.length ? `读者笔记：\n${notes.map((note) => `- ${note}`).join("\n")}` : "",
-      [
-        "请输出中文。",
-        "结构：",
-        "1. 标题，一行。",
-        "2. 三条提纲。",
-        "3. 双人对谈文字稿，8-12 轮，每轮短一点。",
-        "4. 最后留下一个给读者的问题。",
-        "对谈必须有张力：先复述本章，再追问最刺人的地方，再回到读者今天为什么还需要读这一章。",
-      ].join("\n"),
     ]
       .filter(Boolean)
       .join("\n\n"),
   });
 
-  return Response.json({ transcript: result.text.trim() });
+  return result.toTextStreamResponse();
 }
