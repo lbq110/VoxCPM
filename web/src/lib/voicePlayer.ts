@@ -10,7 +10,10 @@ type Phase = "idle" | "synthesizing" | "speaking";
 export class VoicePlayer {
   private ctx: AudioContext | null = null;
   private nextTime = 0;
-  private queue: ({ text: string; tag?: unknown } | { silence: number })[] = [];
+  private queue: (
+    | { text: string; tag?: unknown; options?: Record<string, unknown> }
+    | { silence: number }
+  )[] = [];
   private draining = false;
   private generation = 0; // bumped on stop() to cancel in-flight work
   private activeSources = new Set<AudioBufferSourceNode>();
@@ -50,11 +53,13 @@ export class VoicePlayer {
     this.ensureCtx();
   }
 
-  /** Queue a finished sentence/segment for synthesis + playback. */
-  speak(text: string, tag?: unknown) {
+  /** Queue a finished sentence/segment for synthesis + playback.
+   *  Per-utterance options (e.g. a different voice) override the instance
+   *  defaults for that utterance only. */
+  speak(text: string, tag?: unknown, options?: Record<string, unknown>) {
     const t = text.trim();
     if (!t) return;
-    this.queue.push({ text: t, tag });
+    this.queue.push({ text: t, tag, options });
     this.waitingForFirstAudio = true;
     void this.drain();
   }
@@ -115,7 +120,7 @@ export class VoicePlayer {
       }
       try {
         if (!this.activeSources.size) this.onPhase?.("synthesizing");
-        await this.synthAndSchedule(item.text, gen, item.tag);
+        await this.synthAndSchedule(item.text, gen, item.tag, item.options);
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         console.error("tts error", err);
@@ -139,7 +144,12 @@ export class VoicePlayer {
     }
   }
 
-  private async synthAndSchedule(text: string, gen: number, tag?: unknown) {
+  private async synthAndSchedule(
+    text: string,
+    gen: number,
+    tag?: unknown,
+    options?: Record<string, unknown>,
+  ) {
     const controller = new AbortController();
     this.activeFetches.add(controller);
     let announcedStart = false;
@@ -155,7 +165,7 @@ export class VoicePlayer {
       const res = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, ...this.ttsOptions }),
+        body: JSON.stringify({ text, ...this.ttsOptions, ...(options ?? {}) }),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(`tts ${res.status}`);

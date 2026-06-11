@@ -9,6 +9,7 @@ import {
 import { buildAskContext, buildRecapContext } from "@/lib/ask-context";
 import { searchReadBlocks } from "@/lib/book-search";
 import { parseReaderState, serializeReaderState } from "@/lib/reader-state";
+import { parseDialogueScript } from "@/lib/dialogue-script";
 import { VoicePlayer } from "@/lib/voicePlayer";
 
 type DialoguePartner = {
@@ -315,6 +316,10 @@ export default function BookCompanion() {
   const [voiceUploading, setVoiceUploading] = useState(false);
   const [voiceUploadMsg, setVoiceUploadMsg] = useState("");
   const [voiceManaging, setVoiceManaging] = useState(false);
+  // Two-voice dialogue narration: speaker -> voice mapping + playing line.
+  const [dialogueVoicePartner, setDialogueVoicePartner] = useState<string | null>(null);
+  const [dialogueVoiceResearcher, setDialogueVoiceResearcher] = useState<string | null>(null);
+  const [dialoguePlayingLine, setDialoguePlayingLine] = useState<number | null>(null);
   const [dialogueTranscript, setDialogueTranscript] = useState("");
   const [notes, setNotes] = useState(initialNotes);
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
@@ -533,6 +538,13 @@ export default function BookCompanion() {
     listenRef.current.player?.setOptions(listenTtsOptions(listenVoice));
   }, [listenVoice]);
 
+  // default dialogue voices: first two voices in the library
+  useEffect(() => {
+    if (!voices.length) return;
+    setDialogueVoicePartner((cur) => cur ?? voices[0]?.id ?? null);
+    setDialogueVoiceResearcher((cur) => cur ?? voices[1]?.id ?? voices[0]?.id ?? null);
+  }, [voices]);
+
   // Rebind the listening handlers every render so they always see the
   // latest closures (passages, page state). Stop playback on unmount.
   useEffect(() => {
@@ -716,6 +728,7 @@ export default function BookCompanion() {
   function listenPhaseHandler(phase: "idle" | "synthesizing" | "speaking") {
     const l = listenRef.current;
     if (!l.active) {
+      if (phase === "idle") setDialoguePlayingLine(null);
       setListenPhase("idle");
       return;
     }
@@ -788,6 +801,10 @@ export default function BookCompanion() {
 
   function handleUtteranceStart(tag: unknown) {
     const l = listenRef.current;
+    if (typeof tag === "string" && tag.startsWith("dlg-")) {
+      setDialoguePlayingLine(Number(tag.slice(4)));
+      return;
+    }
     if (!l.active || typeof tag !== "string") return;
     const pos = l.ids.indexOf(tag);
     if (pos < 0) return;
@@ -1106,6 +1123,25 @@ export default function BookCompanion() {
     } finally {
       setGeneratingDialogue(false);
     }
+  }
+
+  function playDialogue() {
+    const rows = parseDialogueScript(dialogueTranscript);
+    if (!rows.length) return;
+    stopListening(); // mutually exclusive with book narration
+    const player = ensurePlayer();
+    player.prime();
+    setDialoguePlayingLine(0);
+    rows.forEach((row, index) => {
+      const voice = row.speaker === "研究者" ? dialogueVoiceResearcher : dialogueVoicePartner;
+      player.speak(row.line, `dlg-${index}`, voice ? { voice } : undefined);
+      if (index < rows.length - 1) player.speakSilence(0.35);
+    });
+  }
+
+  function stopDialogue() {
+    listenRef.current.player?.stop();
+    setDialoguePlayingLine(null);
   }
 
   function saveAnswerAsNote() {
@@ -2062,10 +2098,76 @@ export default function BookCompanion() {
                     </div>
                     <div
                       data-dialogue-transcript
-                      className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded-[12px] bg-current/5 p-3 text-[14px] leading-relaxed"
+                      className="max-h-64 space-y-2 overflow-y-auto rounded-[12px] bg-current/5 p-3 text-[14px] leading-relaxed"
                     >
-                      {dialogueTranscript}
+                      {parseDialogueScript(dialogueTranscript).map((row, index) => (
+                        <p
+                          key={index}
+                          data-dlg-line={index}
+                          className={classNames(
+                            "rounded-[6px] px-1.5 py-0.5",
+                            dialoguePlayingLine === index && "bg-[#1f8a70]/20",
+                          )}
+                        >
+                          <span className={classNames("font-semibold", theme.muted)}>{row.speaker}：</span>
+                          {row.line}
+                        </p>
+                      ))}
                     </div>
+
+                    {!generatingDialogue && voices.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="space-y-1">
+                            <span className={classNames("text-xs", theme.muted)}>{selectedPartner.name} 的声音</span>
+                            <select
+                              value={dialogueVoicePartner ?? ""}
+                              onChange={(e) => {
+                                stopDialogue();
+                                setDialogueVoicePartner(e.target.value || null);
+                              }}
+                              className={classNames("h-10 w-full rounded-[12px] border bg-transparent px-2 text-sm", theme.card)}
+                            >
+                              {voices.map((v) => (
+                                <option key={v.id} value={v.id}>{v.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="space-y-1">
+                            <span className={classNames("text-xs", theme.muted)}>研究者的声音</span>
+                            <select
+                              value={dialogueVoiceResearcher ?? ""}
+                              onChange={(e) => {
+                                stopDialogue();
+                                setDialogueVoiceResearcher(e.target.value || null);
+                              }}
+                              className={classNames("h-10 w-full rounded-[12px] border bg-transparent px-2 text-sm", theme.card)}
+                            >
+                              {voices.map((v) => (
+                                <option key={v.id} value={v.id}>{v.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                        {dialoguePlayingLine === null ? (
+                          <button
+                            type="button"
+                            onClick={playDialogue}
+                            className="h-11 w-full rounded-[14px] bg-[#1f8a70] text-sm font-semibold text-white"
+                          >
+                            ▶ 播放对谈
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={stopDialogue}
+                            className="h-11 w-full rounded-[14px] bg-[#c4543f] text-sm font-semibold text-white"
+                          >
+                            停止播放
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
