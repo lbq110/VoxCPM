@@ -457,12 +457,16 @@ export default function BookCompanion() {
     const list = data.voices ?? [];
     setVoices(list);
     setListenVoice((current) => current ?? data.default ?? list[0]?.id ?? null);
+    // dialogue defaults: first two voices in the library
+    setDialogueVoicePartner((cur) => cur ?? list[0]?.id ?? null);
+    setDialogueVoiceResearcher((cur) => cur ?? list[1]?.id ?? list[0]?.id ?? null);
     return list;
   }
 
   useEffect(() => {
-    void refreshVoices().catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const id = window.setTimeout(() => void refreshVoices().catch(() => undefined), 0);
+    return () => window.clearTimeout(id);
+     
   }, []);
 
   async function renameVoice(id: string, currentLabel: string) {
@@ -537,13 +541,6 @@ export default function BookCompanion() {
   useEffect(() => {
     listenRef.current.player?.setOptions(listenTtsOptions(listenVoice));
   }, [listenVoice]);
-
-  // default dialogue voices: first two voices in the library
-  useEffect(() => {
-    if (!voices.length) return;
-    setDialogueVoicePartner((cur) => cur ?? voices[0]?.id ?? null);
-    setDialogueVoiceResearcher((cur) => cur ?? voices[1]?.id ?? voices[0]?.id ?? null);
-  }, [voices]);
 
   // Rebind the listening handlers every render so they always see the
   // latest closures (passages, page state). Stop playback on unmount.

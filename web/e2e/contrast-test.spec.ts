@@ -52,7 +52,7 @@ test("drawer panel buttons are visible in all themes", async ({ page }) => {
 
   for (let i = 0; i < 3; i++) {
     const data = await page.evaluate(() => {
-      const sheet = document.querySelector<HTMLElement>("section.fixed.z-50, section[class*='z-50']");
+      const _sheet = document.querySelector<HTMLElement>("section.fixed.z-50, section[class*='z-50']");
       const tab = Array.from(document.querySelectorAll<HTMLElement>("button"))
         .find((b) => b.textContent === "听书" && b.offsetParent !== null);
       const fontBtn = Array.from(document.querySelectorAll<HTMLElement>("button"))
