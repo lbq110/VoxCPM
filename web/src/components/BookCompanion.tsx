@@ -11,6 +11,7 @@ import { searchReadBlocks } from "@/lib/book-search";
 import { parseReaderState, serializeReaderState } from "@/lib/reader-state";
 import { parseDialogueScript } from "@/lib/dialogue-script";
 import { extractBookMeta } from "@/lib/book-meta";
+import { parseEpub } from "@/lib/epub";
 import { VoicePlayer } from "@/lib/voicePlayer";
 
 type DialoguePartner = {
@@ -965,6 +966,24 @@ export default function BookCompanion() {
 
   async function handleTextFile(file?: File) {
     if (!file) return;
+    const isEpub =
+      /\.epub$/i.test(file.name) || file.type === "application/epub+zip";
+    if (isEpub) {
+      try {
+        const { title, author, body } = await parseEpub(await file.arrayBuffer());
+        const header = [
+          "---",
+          `title: ${title}`,
+          `author: ${author}`,
+          "---",
+          "",
+        ].join("\n");
+        importJiyuanText(header + body);
+      } catch {
+        setError("EPUB 解析失败，请确认文件完整");
+      }
+      return;
+    }
     const text = await file.text();
     setImportText(text);
     importJiyuanText(text);
@@ -1348,7 +1367,7 @@ export default function BookCompanion() {
                 导入你的书
               </h1>
               <div className={classNames("mt-3 text-xs", theme.muted)}>
-                支持任意 TXT / Markdown，自动识别书名与作者
+                支持任意 TXT / Markdown / EPUB，自动识别书名与作者
               </div>
             </div>
           )}
@@ -1359,7 +1378,7 @@ export default function BookCompanion() {
                 <div>
                   <p className={classNames("text-sm font-semibold", theme.text)}>导入正文</p>
                   <p className={classNames("mt-1 text-xs leading-relaxed", theme.muted)}>
-                    导入 TXT 或 Markdown 后进入阅读器。
+                    导入 TXT、Markdown 或 EPUB 后进入阅读器。
                   </p>
                 </div>
               </div>
@@ -1372,10 +1391,10 @@ export default function BookCompanion() {
                 />
                 <div className="flex gap-2">
                   <label className={classNames("grid h-11 flex-1 cursor-pointer place-items-center rounded-[14px] border text-sm font-semibold", theme.card)}>
-                    选择 TXT/MD
+                    选择 TXT/MD/EPUB
                     <input
                       type="file"
-                      accept=".txt,.md,text/plain,text/markdown"
+                      accept=".txt,.md,text/plain,text/markdown,.epub,application/epub+zip"
                       className="sr-only"
                       onChange={(event) => void handleTextFile(event.target.files?.[0])}
                     />
@@ -1460,7 +1479,7 @@ export default function BookCompanion() {
                 <div>
                   <p className={classNames("text-sm font-semibold", theme.text)}>导入正文</p>
                   <p className={classNames("mt-1 text-xs leading-relaxed", theme.muted)}>
-                    导入 TXT 或 Markdown 后进入阅读器。
+                    导入 TXT、Markdown 或 EPUB 后进入阅读器。
                   </p>
                 </div>
               </div>
@@ -1473,10 +1492,10 @@ export default function BookCompanion() {
                 />
                 <div className="flex gap-2">
                   <label className={classNames("grid h-11 flex-1 cursor-pointer place-items-center rounded-[14px] border text-sm font-semibold", theme.card)}>
-                    选择 TXT/MD
+                    选择 TXT/MD/EPUB
                     <input
                       type="file"
-                      accept=".txt,.md,text/plain,text/markdown"
+                      accept=".txt,.md,text/plain,text/markdown,.epub,application/epub+zip"
                       className="sr-only"
                       onChange={(event) => void handleTextFile(event.target.files?.[0])}
                     />
