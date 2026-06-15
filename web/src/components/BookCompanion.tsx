@@ -10,6 +10,7 @@ import { buildAskContext, buildRecapContext } from "@/lib/ask-context";
 import { searchReadBlocks } from "@/lib/book-search";
 import { parseReaderState, serializeReaderState } from "@/lib/reader-state";
 import { parseDialogueScript } from "@/lib/dialogue-script";
+import { extractBookMeta } from "@/lib/book-meta";
 import { VoicePlayer } from "@/lib/voicePlayer";
 
 type DialoguePartner = {
@@ -41,10 +42,7 @@ type ReaderTheme = {
   hover: string;
 };
 
-const bookTitle = "纪元";
-const bookSubtitle = "王朔《纪元》";
-const chapterTitle = "纪元";
-const authorView = "王朔《纪元》的文本研究者，不代表作者本人，也不模拟真人发言";
+const appBrand = "书伴 · 互动阅读";
 
 const partners: DialoguePartner[] = [
   {
@@ -79,14 +77,14 @@ const PAGE_GAP = 48;
 const placeholderPassages: BookBlock[] = [
   {
     id: "placeholder",
-    text: "《纪元》正文待导入。把你已有的 TXT/MD 文本粘贴到这里，书伴会在本机拆成可阅读段落。",
+    text: "正文待导入。把任意 TXT 或 Markdown 文本粘贴到这里，书伴会在本机拆成可阅读段落。",
     kind: "paragraph",
   },
 ];
 
 const initialNotes = [
-  "《纪元》导入后，问书、对谈和笔记都会围绕当前选中的段落生成。",
-  "对谈中的作者侧是文本研究者视角，不代表王朔本人真实发言。",
+  "导入书籍后，问书、对谈和笔记都会围绕当前选中的段落生成。",
+  "对谈中的作者侧是文本研究者视角，不代表原作者本人真实发言。",
 ];
 
 const depthLabels: Record<string, string> = {
@@ -353,8 +351,17 @@ export default function BookCompanion() {
   );
 
   const hasImportedText = passages[0]?.id !== "placeholder";
+  // Title/author extracted from the imported text — everything follows the book.
+  const bookMeta = useMemo(() => extractBookMeta(importText), [importText]);
   const readingTitle =
-    (hasImportedText && passages.find((item) => item.kind === "heading")?.text) || chapterTitle;
+    bookMeta.title ||
+    (hasImportedText && passages.find((item) => item.kind === "heading")?.text) ||
+    (hasImportedText ? "未命名书籍" : appBrand);
+  const bookAuthor = bookMeta.author;
+  // Dialogue's author-side persona, derived from the book.
+  const authorView = bookAuthor
+    ? `${bookAuthor}《${readingTitle}》的文本研究者，不代表作者本人，也不模拟真人发言`
+    : `《${readingTitle}》的文本研究者，不代表作者本人，也不模拟真人发言`;
   const desktopPages = useMemo(
     () => paginateBookBlocks(passages, fontSize, lineHeight, "desktop"),
     [fontSize, lineHeight, passages],
@@ -388,7 +395,7 @@ export default function BookCompanion() {
     const id = window.setTimeout(() => {
       const saved = window.localStorage.getItem("book-companion:jiyuan:text");
       if (saved) {
-        const next = parseBookText(saved);
+        const next = parseBookText(extractBookMeta(saved).body);
         if (next.length) {
           setImportText(saved);
           setPassages(next);
@@ -923,12 +930,13 @@ export default function BookCompanion() {
   }
 
   function importJiyuanText(raw = importText) {
-    const next = parseBookText(raw);
+    const next = parseBookText(extractBookMeta(raw).body);
     if (!next.length) {
       setError("没有识别到可导入的正文。请粘贴 TXT/MD 文本，至少包含一段完整内容。");
       return;
     }
     window.localStorage.setItem("book-companion:jiyuan:text", raw.trim());
+    setImportText(raw.trim());
     setPassages(next);
     setSelectedPassage(firstSelectableId(next));
     setPageIndex(0);
@@ -941,7 +949,7 @@ export default function BookCompanion() {
 
   function reflowImportedText() {
     const raw = importText || window.localStorage.getItem("book-companion:jiyuan:text") || "";
-    const next = parseBookText(raw);
+    const next = parseBookText(extractBookMeta(raw).body);
     if (!next.length) {
       setError("没有可重新整理的正文。请先导入 TXT/MD 文本。");
       return;
@@ -1261,8 +1269,8 @@ export default function BookCompanion() {
             书
           </div>
           <div className="min-w-0">
-            <div className="truncate text-[22px] font-semibold">起初 · {readingTitle}</div>
-            <div className="mt-0.5 truncate text-xs font-medium opacity-70">{bookSubtitle}</div>
+            <div className="truncate text-[22px] font-semibold">{readingTitle}</div>
+            <div className="mt-0.5 truncate text-xs font-medium opacity-70">{bookAuthor || appBrand}</div>
           </div>
           <button
             type="button"
@@ -1318,7 +1326,7 @@ export default function BookCompanion() {
               <div data-page-indicator className={classNames("mt-0.5 text-[11px]", theme.muted)}>
                 {hasImportedText
                   ? `${mobileSafePageIndex + 1} / ${mobilePageCount} · ${mobileReadingProgress}%`
-                  : bookSubtitle}
+                  : "导入 TXT / Markdown 开始阅读"}
               </div>
             </div>
             <button
@@ -1334,13 +1342,13 @@ export default function BookCompanion() {
           {!hasImportedText && (
             <div className="mb-6 mt-6 text-center">
               <p className={classNames("text-xs font-semibold uppercase tracking-[0.2em]", theme.muted)}>
-                Wang Shuo Reader
+                {appBrand}
               </p>
               <h1 className={classNames("mx-auto mt-3 max-w-[13em] text-[30px] font-semibold leading-tight", theme.text)}>
-                {readingTitle}
+                导入你的书
               </h1>
               <div className={classNames("mt-3 text-xs", theme.muted)}>
-                {hasImportedText ? `${readableBlockCount} 个阅读块 · ${mobilePageCount} 页` : "等待导入正文"}
+                支持任意 TXT / Markdown，自动识别书名与作者
               </div>
             </div>
           )}
@@ -1349,7 +1357,7 @@ export default function BookCompanion() {
             <div className={classNames("mx-auto max-w-xl rounded-[18px] border p-4", theme.card)}>
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className={classNames("text-sm font-semibold", theme.text)}>{bookTitle} 正文</p>
+                  <p className={classNames("text-sm font-semibold", theme.text)}>导入正文</p>
                   <p className={classNames("mt-1 text-xs leading-relaxed", theme.muted)}>
                     导入 TXT 或 Markdown 后进入阅读器。
                   </p>
@@ -1359,7 +1367,7 @@ export default function BookCompanion() {
                 <textarea
                   value={importText}
                   onChange={(event) => setImportText(event.target.value)}
-                  placeholder="粘贴《纪元》正文片段或章节文本..."
+                  placeholder="粘贴任意 TXT / Markdown 正文，开头可含书名和作者..."
                   className="min-h-28 w-full resize-none rounded-[14px] border border-current/10 bg-transparent px-3 py-3 text-sm leading-relaxed outline-none placeholder:text-current/35"
                 />
                 <div className="flex gap-2">
@@ -1450,7 +1458,7 @@ export default function BookCompanion() {
             <div className={classNames("mx-auto max-w-xl rounded-[18px] border p-4", theme.card)}>
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className={classNames("text-sm font-semibold", theme.text)}>{bookTitle} 正文</p>
+                  <p className={classNames("text-sm font-semibold", theme.text)}>导入正文</p>
                   <p className={classNames("mt-1 text-xs leading-relaxed", theme.muted)}>
                     导入 TXT 或 Markdown 后进入阅读器。
                   </p>
@@ -1460,7 +1468,7 @@ export default function BookCompanion() {
                 <textarea
                   value={importText}
                   onChange={(event) => setImportText(event.target.value)}
-                  placeholder="粘贴《纪元》正文片段或章节文本..."
+                  placeholder="粘贴任意 TXT / Markdown 正文，开头可含书名和作者..."
                   className="min-h-28 w-full resize-none rounded-[14px] border border-current/10 bg-transparent px-3 py-3 text-sm leading-relaxed outline-none placeholder:text-current/35"
                 />
                 <div className="flex gap-2">
@@ -1691,6 +1699,18 @@ export default function BookCompanion() {
 
             {panel === "toc" && (
               <div className="space-y-2">
+                {hasImportedText && (
+                  <div className={classNames("mb-1 rounded-[14px] border px-4 py-3", theme.card)}>
+                    <p data-book-title className={classNames("text-[15px] font-semibold", theme.text)}>
+                      {readingTitle}
+                    </p>
+                    {bookAuthor && (
+                      <p data-book-author className={classNames("mt-0.5 text-xs", theme.muted)}>
+                        {bookAuthor}
+                      </p>
+                    )}
+                  </div>
+                )}
                 {tocItems.length ? (
                   tocItems.map((item) => (
                     <button
